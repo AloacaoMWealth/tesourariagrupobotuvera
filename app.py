@@ -854,7 +854,14 @@ def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
             positions[col] = positions["valor"] if col in ["valor_bruto", "valor_liquido"] else 0.0
         positions[col] = pd.to_numeric(positions[col], errors="coerce").fillna(0.0)
 
+    # O relatório da XP não traz uma coluna explícita de IR.
+    # Por isso, o app força o cálculo por ativo usando: Posição/Valor Bruto - Valor Líquido.
+    # Isso evita exibir IR zerado quando o Excel só disponibiliza bruto e líquido.
     positions["valor"] = positions["valor_bruto"]
+    positions["ir"] = (positions["valor_bruto"] - positions["valor_liquido"]).clip(lower=0).round(2)
+    positions.loc[positions["valor_liquido"] <= 0, "valor_liquido"] = positions.loc[positions["valor_liquido"] <= 0, "valor_bruto"]
+    positions["ir"] = (positions["valor_bruto"] - positions["valor_liquido"]).clip(lower=0).round(2)
+
     positions["aplicacao_fmt"] = positions["aplicacao"].apply(fmt_date_br)
     positions["vencimento_fmt"] = positions["vencimento"].apply(fmt_date_br)
 
