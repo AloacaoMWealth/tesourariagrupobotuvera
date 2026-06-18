@@ -1,6 +1,7 @@
 
 import base64
 import html
+import io
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -9,6 +10,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from PIL import Image
+from PIL import Image
 
 
 APP_TITLE = "Tesouraria Grupo Botuverá"
@@ -26,7 +29,7 @@ IOF_ALERT_DAYS = 22
 IOF_WARN_DAYS = 18
 IOF_OK_DAYS = 14
 
-LIQUIDITY_ORDER = ["D+0", "D+1", "ISENTA", "D+31", "N/A"]
+LIQUIDITY_ORDER = ["D+0", "D+1", "D+31", "N/A"]
 
 
 # ------------------------ utilidades ------------------------
@@ -222,7 +225,8 @@ def inject_css():
             color:#F8FAFC;
         }
 
-        .hero-title h1 span { color:#9EC5FF; font-style: italic; }
+        .hero-title h1 span { color:#9EC5FF; font-style: italic; display:inline-flex; align-items:center; gap:12px; }
+        .title-icon { width:44px; height:44px; object-fit:contain; vertical-align:middle; margin-bottom:-4px; }
         .hero-title p {
             margin: 10px 0 0;
             color: #A9C7FF;
@@ -468,6 +472,54 @@ def inject_css():
             border-bottom: 3px solid #8DB7FF;
         }
 
+
+        .partner-value {
+            display:flex;
+            align-items:center;
+            gap:8px;
+        }
+        .partner-mini {
+            width:22px;
+            height:22px;
+            object-fit:contain;
+            border-radius:6px;
+            background: rgba(255,255,255,.04);
+        }
+        .tax-pill {
+            display:inline-block;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size:.72rem;
+            font-weight:900;
+            color:#FCA5A5;
+            background: rgba(239,68,68,.13);
+            border: 1px solid rgba(239,68,68,.20);
+        }
+        .liquidity-pill {
+            display:inline-block;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size:.72rem;
+            font-weight:900;
+            color:#6EE7B7;
+            background: rgba(16,185,129,.13);
+            border: 1px solid rgba(16,185,129,.20);
+        }
+        .download-line {
+            display:flex;
+            justify-content:flex-end;
+            margin: 10px 0 18px;
+        }
+        .stDownloadButton > button {
+            border-radius: 999px !important;
+            border: 1px solid rgba(148,163,184,.22) !important;
+            background: rgba(15,23,42,.78) !important;
+            color: #BFDBFE !important;
+            font-weight: 800 !important;
+            padding: 0.35rem 0.8rem !important;
+            min-height: 2.1rem !important;
+        }
+
         @media (max-width: 1100px) {
             .hero { flex-direction: column; align-items: flex-start; }
             .hero-right { width: 100%; justify-content: space-between; }
@@ -479,9 +531,12 @@ def inject_css():
     )
 
 
+
 def render_header(reference_date: str):
     logo = logo_base64(BOTUVERA_LOGO)
     logo_html = f'<img class="hero-logo" src="data:image/png;base64,{logo}" />' if logo else ""
+    title_logo_html = f'<img class="title-icon" src="data:image/png;base64,{logo}" />' if logo else ""
+    partner_logo = f'<img class="partner-mini" src="data:image/png;base64,{logo}" />' if logo else ""
     st.markdown(
         f"""
         <div class="hero-shell">
@@ -492,14 +547,14 @@ def render_header(reference_date: str):
                         <div class="mw-text">Wealth</div>
                     </div>
                     <div class="hero-title">
-                        <h1>Tesouraria <span>Grupo Botuverá</span></h1>
+                        <h1>Tesouraria <span>{title_logo_html} Grupo Botuverá</span></h1>
                         <p>{SUBTITLE}</p>
                     </div>
                 </div>
                 <div class="hero-right">
                     <div class="hero-meta">
                         <div class="k">Data</div><div class="v">{reference_date}</div>
-                        <div class="k">Parceiro</div><div class="v">{PARTNER}</div>
+                        <div class="k">Parceiro</div><div class="v partner-value">{partner_logo}<span>{PARTNER}</span></div>
                         <div class="k">Gestor</div><div class="v">{GESTOR}</div>
                     </div>
                     {logo_html}
@@ -509,7 +564,6 @@ def render_header(reference_date: str):
         """,
         unsafe_allow_html=True,
     )
-
 
 def section(title: str):
     st.markdown(f'<div class="section-title">{html.escape(title)}</div>', unsafe_allow_html=True)
@@ -583,13 +637,15 @@ def load_clients():
     return default
 
 
+
 def classify_product(group_name: str, subgroup_name: str, asset_name: str):
     s = f"{group_name or ''} {subgroup_name or ''} {asset_name or ''}".lower()
 
     if "compromiss" in s:
         return "Op. Compromissadas", "D+0", "pos_fixado"
     if any(x in s for x in ["lca", "lci"]):
-        return "Renda Fixa Isenta", "ISENTA", "isento"
+        # Produto isento, mas liquidez operacional diária/D+0 no relatório.
+        return "Renda Fixa Isenta", "D+0", "isento"
     if "fundo" in s or "fic" in s or "firf" in s:
         if "d+31" in s or "d31" in s:
             return "Fundos D+31", "D+31", "pos_fixado"
@@ -606,26 +662,35 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
     asset = ""
     appl = pd.NaT
     venc = pd.NaT
-    value = 0.0
+    valor_bruto = 0.0
+    valor_liquido = 0.0
 
     if "fundo" in group_text:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
-        value = parse_money(row.iloc[5]) if len(row) > 5 else 0.0  # coluna Posição
+        valor_bruto = parse_money(row.iloc[5]) if len(row) > 5 else 0.0      # Posição
+        valor_liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0    # Valor líquido
     elif "compromiss" in group_text:
         asset = "OPERAÇÕES COMPROMISSADAS"
         appl = parse_date_br(row.iloc[1]) if len(row) > 1 else pd.NaT
         venc = parse_date_br(row.iloc[3]) if len(row) > 3 else pd.NaT
-        value = parse_money(row.iloc[8]) if len(row) > 8 else 0.0  # coluna Posição
+        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0      # Posição
+        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0    # Valor líquido
     else:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
         appl = parse_date_br(row.iloc[1]) if len(row) > 1 else pd.NaT
         venc = parse_date_br(row.iloc[3]) if len(row) > 3 else pd.NaT
-        value = parse_money(row.iloc[8]) if len(row) > 8 else 0.0  # coluna Posição
+        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0      # Posição
+        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0    # Valor líquido
 
-    if value <= 0:
+    if valor_bruto <= 0 and valor_liquido <= 0:
         return None
+    if valor_bruto <= 0:
+        valor_bruto = valor_liquido
+    if valor_liquido <= 0:
+        valor_liquido = valor_bruto
 
     produto, liquidez, fator = classify_product(group_name, subgroup_name, asset)
+    ir = max(valor_bruto - valor_liquido, 0.0)
 
     days = None
     if isinstance(appl, date) and not pd.isna(appl) and isinstance(ref_date, date):
@@ -644,11 +709,13 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
         "aplicacao": appl,
         "vencimento": venc,
         "dias_desde_aplicacao": days,
-        "valor": value,
+        "valor": valor_bruto,
+        "valor_bruto": valor_bruto,
+        "valor_liquido": valor_liquido,
+        "ir": ir,
         "grupo_origem": group_name,
         "subgrupo_origem": subgroup_name,
     }
-
 
 def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
     df = pd.read_excel(file_obj, sheet_name=0, header=None, dtype=object, engine="openpyxl")
@@ -717,6 +784,10 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
                 "vencimento": pd.NaT,
                 "dias_desde_aplicacao": None,
                 "valor": saldo_disponivel,
+                "valor_bruto": saldo_disponivel,
+                "valor_liquido": saldo_disponivel,
+                "ir": 0.0,
+                "valor_aplicado": 0.0,
                 "grupo_origem": "Saldo em Conta",
                 "subgrupo_origem": "Saldo em Conta",
             }
@@ -772,31 +843,48 @@ def load_data_from_uploads(uploaded_files):
 
 # ------------------------ enriquecimento / kpis ------------------------
 
+
 def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
     if positions.empty:
         return positions, summary
 
     positions = positions.copy()
-    positions["valor"] = pd.to_numeric(positions["valor"], errors="coerce").fillna(0.0)
+    for col in ["valor", "valor_bruto", "valor_liquido", "ir", "valor_aplicado"]:
+        if col not in positions.columns:
+            positions[col] = positions["valor"] if col in ["valor_bruto", "valor_liquido"] else 0.0
+        positions[col] = pd.to_numeric(positions[col], errors="coerce").fillna(0.0)
+
+    positions["valor"] = positions["valor_bruto"]
     positions["aplicacao_fmt"] = positions["aplicacao"].apply(fmt_date_br)
     positions["vencimento_fmt"] = positions["vencimento"].apply(fmt_date_br)
 
     totals_by_account = positions.groupby("conta")["valor"].sum().rename("patrimonio")
+    liquid_by_account = positions.groupby("conta")["valor_liquido"].sum().rename("patrimonio_liquido")
+    ir_by_account = positions.groupby("conta")["ir"].sum().rename("ir_total")
+
     positions = positions.merge(totals_by_account, on="conta", how="left", suffixes=("", "_conta"))
     positions["participacao_conta"] = positions["valor"] / positions["patrimonio"]
     positions["participacao_total"] = positions["valor"] / positions["valor"].sum()
     positions["participacao_fmt"] = positions["participacao_conta"].apply(pct)
     positions["valor_fmt"] = positions["valor"].apply(brl)
+    positions["valor_bruto_fmt"] = positions["valor_bruto"].apply(brl)
+    positions["valor_liquido_fmt"] = positions["valor_liquido"].apply(brl)
+    positions["ir_fmt"] = positions["ir"].apply(brl)
+    positions["valor_liquido_fmt"] = positions["valor_liquido"].apply(brl)
+    positions["ir_fmt"] = positions["ir"].apply(brl)
 
     summary = summary.copy()
     if summary.empty:
         return positions, summary
 
-    patr_map = totals_by_account.to_dict()
-    summary["patrimonio"] = summary["conta"].astype(str).map(patr_map).fillna(summary.get("patrimonio_arquivo", 0))
+    summary["patrimonio"] = summary["conta"].astype(str).map(totals_by_account.to_dict()).fillna(summary.get("patrimonio_arquivo", 0))
+    summary["patrimonio_liquido"] = summary["conta"].astype(str).map(liquid_by_account.to_dict()).fillna(summary["patrimonio"])
+    summary["ir_total"] = summary["conta"].astype(str).map(ir_by_account.to_dict()).fillna(0.0)
     summary["participacao_total"] = summary["patrimonio"] / summary["patrimonio"].sum()
     summary["participacao_fmt"] = summary["participacao_total"].apply(pct)
     summary["patrimonio_fmt"] = summary["patrimonio"].apply(brl)
+    summary["patrimonio_liquido_fmt"] = summary["patrimonio_liquido"].apply(brl)
+    summary["ir_total_fmt"] = summary["ir_total"].apply(brl)
     summary["iniciais"] = summary["titular"].apply(lambda s: "".join([p[0] for p in str(s).split()[:2]]).upper())
     summary["posicoes"] = summary["conta"].astype(str).map(positions.groupby("conta").size().to_dict()).fillna(0).astype(int)
     return positions, summary
@@ -804,13 +892,17 @@ def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
 
 def calc_kpis(positions: pd.DataFrame, summary: pd.DataFrame):
     total = float(positions["valor"].sum()) if not positions.empty else 0.0
+    total_liquido = float(positions["valor_liquido"].sum()) if "valor_liquido" in positions.columns else total
+    ir_total = float(positions["ir"].sum()) if "ir" in positions.columns else max(total - total_liquido, 0)
     liq_d0 = float(positions[positions["liquidez"].isin(["D+0", "D+1"])]["valor"].sum())
-    isenta = float(positions[positions["liquidez"].eq("ISENTA")]["valor"].sum())
-    travado = float(positions[~positions["liquidez"].isin(["D+0", "D+1", "ISENTA"])]["valor"].sum())
+    isenta = float(positions[positions["produto"].eq("Renda Fixa Isenta")]["valor"].sum())
+    travado = float(positions[~positions["liquidez"].isin(["D+0", "D+1"])]["valor"].sum())
     maior = summary.sort_values("patrimonio", ascending=False).iloc[0] if not summary.empty else None
 
     return {
         "total": total,
+        "total_liquido": total_liquido,
+        "ir_total": ir_total,
         "liquidez_d0": liq_d0,
         "liquidez_d0_pct": safe_div(liq_d0, total),
         "isenta": isenta,
@@ -839,7 +931,8 @@ def render_account_card(row, total_geral: float):
                 </div>
                 <div>
                     <div class="money">{brl(row['patrimonio'])}</div>
-                    <div class="submoney">{pct(safe_div(row['patrimonio'], total_geral))}</div>
+                    <div class="submoney">{pct(safe_div(row['patrimonio'], total_geral))} • Líq. {brl(row.get('patrimonio_liquido', row['patrimonio']))}</div>
+                    <div class="submoney" style="color:#FCA5A5;">IR: {brl(row.get('ir_total', 0))}</div>
                 </div>
             </div>
             <div class="bar-bg"><div class="bar-fill" style="width:{max(min(100 * safe_div(row['patrimonio'], total_geral), 100), 0):.2f}%"></div></div>
@@ -850,11 +943,12 @@ def render_account_card(row, total_geral: float):
 
 
 def render_visao_geral(positions, summary, kpis):
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Patrimônio total", brl(kpis["total"]))
-    c2.metric("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]))
-    c3.metric("Contas sob gestão", str(kpis["contas"]), f"{int((summary['tipo'] == 'principal').sum())} principais")
-    c4.metric("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"])
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Patrimônio bruto", brl(kpis["total"]))
+    c2.metric("Valor líquido", brl(kpis["total_liquido"]))
+    c3.metric("IR estimado", brl(kpis["ir_total"]))
+    c4.metric("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]))
+    c5.metric("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"])
 
     section("Distribuição por produto")
     left, right = st.columns([1.25, 1])
@@ -890,7 +984,7 @@ def render_visao_geral(positions, summary, kpis):
         disp["participação"] = disp["participacao"].apply(pct)
         disp["valor (R$)"] = disp["valor"].apply(brl)
         disp = disp[["produto", "participação", "valor (R$)"]]
-        st.markdown(html_table(disp, col_classes={"participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
+        st.markdown(html_table(disp, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
 
     section("Concentração por titular")
     titular = summary.sort_values("patrimonio", ascending=True).copy()
@@ -925,7 +1019,7 @@ def render_visao_geral(positions, summary, kpis):
     prod_table["participação"] = prod_table["participacao"].apply(pct)
     prod_table["valor (R$)"] = prod_table["valor"].apply(brl)
     prod_table = prod_table[["produto", "liquidez", "participação", "valor (R$)"]]
-    st.markdown(html_table(prod_table, col_classes={"participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
+    st.markdown(html_table(prod_table, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
 
 
 def render_por_titular(positions, summary, kpis):
@@ -937,12 +1031,14 @@ def render_por_titular(positions, summary, kpis):
         detail = positions[positions["conta"].astype(str) == str(row["conta"])]
         if detail.empty:
             continue
-        produto = detail.groupby("produto", as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+        produto = detail.groupby("produto", as_index=False).agg(valor=("valor", "sum"), valor_liquido=("valor_liquido", "sum"), ir=("ir", "sum")).sort_values("valor", ascending=False)
         produto["participação"] = produto["valor"] / produto["valor"].sum()
         produto["participação"] = produto["participação"].apply(pct)
-        produto["valor (R$)"] = produto["valor"].apply(brl)
-        produto = produto[["produto", "participação", "valor (R$)"]]
-        st.markdown(html_table(produto, col_classes={"participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
+        produto["bruto (R$)"] = produto["valor"].apply(brl)
+        produto["IR (R$)"] = produto["ir"].apply(brl)
+        produto["líquido (R$)"] = produto["valor_liquido"].apply(brl)
+        produto = produto[["produto", "participação", "bruto (R$)", "IR (R$)", "líquido (R$)"]]
+        st.markdown(html_table(produto, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
 
@@ -960,6 +1056,8 @@ def render_detalhamento(positions, summary):
         return
 
     total = float(df["valor"].sum())
+    total_liquido = float(df["valor_liquido"].sum())
+    ir_total = float(df["ir"].sum())
     contas = int(df["conta"].nunique())
     posicoes = int(len(df))
     titulo = selected if selected != "Todos" else "Grupo Botuverá"
@@ -972,7 +1070,10 @@ def render_detalhamento(positions, summary):
                     <div class="section-title" style="margin:0 0 6px 0;">{html.escape(titulo)}</div>
                     <div class="muted">{contas} conta(s) • {posicoes} posição(ões)</div>
                 </div>
-                <div class="money">{brl(total)}</div>
+                <div>
+                    <div class="money">{brl(total)}</div>
+                    <div class="submoney">Líquido {brl(total_liquido)} • IR {brl(ir_total)}</div>
+                </div>
             </div>
         </div>
         """,
@@ -980,15 +1081,39 @@ def render_detalhamento(positions, summary):
     )
 
     view = df.sort_values(["titular", "conta", "produto", "valor"], ascending=[True, True, True, False]).copy()
-    view["dias desde aplic."] = view["dias_desde_aplicacao"].apply(lambda x: "—" if x is None or pd.isna(x) else f"{int(x)}d")
+    view["Liquidez"] = view["liquidez"].apply(lambda x: f'<span class="liquidity-pill">{html.escape(str(x))}</span>')
+    view["Dias desde aplic."] = view["dias_desde_aplicacao"].apply(lambda x: "—" if x is None or pd.isna(x) else f"{int(x)}d")
     view["% carteira"] = view["participacao_conta"].apply(pct)
-    view["valor (R$)"] = view["valor"].apply(brl)
-    view = view[["titular", "conta", "ativo", "produto", "liquidez", "aplicacao_fmt", "vencimento_fmt", "dias desde aplic.", "% carteira", "valor (R$)"]]
-    view.columns = ["Titular", "Conta", "Ativo", "Produto", "Liquidez", "Aplicação", "Vencimento", "Dias desde aplic.", "% carteira", "Valor"]
+    view["Valor bruto"] = view["valor_bruto"].apply(brl)
+    view["IR"] = view["ir"].apply(lambda x: f'<span class="tax-pill">{brl(x)}</span>' if float(x or 0) > 0 else brl(0))
+    view["Valor líquido"] = view["valor_liquido"].apply(brl)
+
+    table_view = view[["titular", "conta", "ativo", "produto", "Liquidez", "aplicacao_fmt", "vencimento_fmt", "Dias desde aplic.", "% carteira", "Valor bruto", "IR", "Valor líquido"]].copy()
+    table_view.columns = ["Titular", "Conta", "Ativo", "Produto", "Liquidez", "Aplicação", "Vencimento", "Dias desde aplic.", "% carteira", "Valor bruto", "IR", "Valor líquido"]
+
+    export_view = table_view.copy()
+    export_view["Liquidez"] = export_view["Liquidez"].str.replace(r"<[^>]*>", "", regex=True)
+    export_view["IR"] = export_view["IR"].str.replace(r"<[^>]*>", "", regex=True)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_view.to_excel(writer, index=False, sheet_name="Posição")
+
+    st.markdown('<div class="download-line">', unsafe_allow_html=True)
+    st.download_button(
+        "baixar arquivo",
+        data=output.getvalue(),
+        file_name=f"tesouraria_botuvera_{str(titulo).lower().replace(' ', '_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=False,
+        help="Baixa a visão filtrada em Excel.",
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown(
         html_table(
-            view,
-            col_classes={"Conta": "center", "% carteira": "num", "Valor": "num", "Liquidez": "center", "Dias desde aplic.": "center"},
+            table_view,
+            col_classes={"Conta": "center", "% carteira": "num", "Valor bruto": "num", "Valor líquido": "num", "IR": "num", "Liquidez": "center", "Dias desde aplic.": "center"},
+            allow_html_cols=["Liquidez", "IR"],
         ),
         unsafe_allow_html=True,
     )
@@ -1007,14 +1132,16 @@ def render_detalhamento(positions, summary):
                             <div class="name">{html.escape(str(r['titular']))} • Conta {html.escape(str(r['conta']))}</div>
                             <div class="muted">Aplicação: {r['aplicacao_fmt']} • Vencimento: {r['vencimento_fmt']} {efficiency_badge(r['dias_desde_aplicacao'])}</div>
                         </div>
-                        <div class="money">{brl(r['valor'])}</div>
+                        <div>
+                            <div class="money">{brl(r['valor_bruto'])}</div>
+                            <div class="submoney">Líquido {brl(r['valor_liquido'])} • IR {brl(r['ir'])}</div>
+                        </div>
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
         st.caption(f"Sinalização visual: verde até {IOF_OK_DAYS} dias, azul até {IOF_WARN_DAYS - 1} dias, amarelo até {IOF_ALERT_DAYS - 1} dias e vermelho a partir de {IOF_ALERT_DAYS} dias.")
-
 
 def render_liquidez(positions, kpis):
     section("Perfil de liquidez")
@@ -1061,10 +1188,10 @@ def render_liquidez(positions, kpis):
         d0["participação"] = d0["participação"].apply(pct)
         d0["valor (R$)"] = d0["valor"].apply(brl)
         d0 = d0[["produto", "participação", "valor (R$)"]]
-        st.markdown(html_table(d0, col_classes={"participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
+        st.markdown(html_table(d0, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
     with col2:
         section("D+31 e renda fixa isenta")
-        travado = positions[~positions["liquidez"].isin(["D+0", "D+1"])].groupby(["produto", "liquidez"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+        travado = positions[(~positions["liquidez"].isin(["D+0", "D+1"])) | (positions["produto"].eq("Renda Fixa Isenta"))].groupby(["produto", "liquidez"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
         travado["participação"] = travado["valor"] / positions["valor"].sum() if not travado.empty else 0
         travado["participação"] = travado["participação"].apply(pct)
         travado["valor (R$)"] = travado["valor"].apply(brl)
@@ -1072,53 +1199,90 @@ def render_liquidez(positions, kpis):
         st.markdown(html_table(travado, col_classes={"liquidez": "center", "participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
 
 
+def status_badge(ok: bool, text_ok="OK", text_bad="Atenção"):
+    return f'<span class="badge {"ok" if ok else "danger"}">{text_ok if ok else text_bad}</span>'
+
+
 def render_politica(positions, kpis):
     section("Política de investimentos")
-    pos_fixado = positions[positions["fator"].isin(["pos_fixado", "caixa"])]["valor"].sum()
+    pos_fixado = positions[positions["fator"].isin(["pos_fixado", "caixa", "isento"])]["valor"].sum()
     pos_fixado_pct = safe_div(pos_fixado, kpis["total"])
-    status = "Dentro da política" if pos_fixado_pct >= MIN_POS_FIXADO else "Ponto de atenção"
+    liquidez_ok = kpis["liquidez_d0_pct"] >= 0.80
+    pos_ok = pos_fixado_pct >= MIN_POS_FIXADO
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pós-fixado / Caixa", pct(pos_fixado_pct), f"mín. {pct(MIN_POS_FIXADO)}")
     c2.metric("Liquidez operacional", pct(kpis["liquidez_d0_pct"]), "D+0 / D+1")
-    c3.metric("Validação CFO", brl(VALIDACAO_CFO_VALOR), "exceto compromissadas")
+    c3.metric("Valor líquido", brl(kpis["total_liquido"]), f"IR {brl(kpis['ir_total'])}")
+    c4.metric("Validação CFO", brl(VALIDACAO_CFO_VALOR), "exceto compromissadas")
 
-    col1, col2 = st.columns([1.2, 1])
+    section("Enquadramento automático")
+    non_comp_cfo = positions[(positions["produto"] != "Op. Compromissadas") & (positions["valor"] >= VALIDACAO_CFO_VALOR)].copy()
+    checks = pd.DataFrame(
+        [
+            ["Segurança / risco", "Ativos classificados como caixa, pós-fixados ou isentos", status_badge(pos_ok), pct(pos_fixado_pct)],
+            ["Liquidez operacional", "Disponibilidade em D+0 ou D+1", status_badge(liquidez_ok), pct(kpis["liquidez_d0_pct"])],
+            ["Renda fixa isenta", "Produto isento, mas com liquidez operacional D+0", status_badge(True), brl(kpis["isenta"])],
+            ["Validação CFO", "Aplicações acima de R$ 5 mi, exceto compromissadas", status_badge(non_comp_cfo.empty), f"{len(non_comp_cfo)} alerta(s)"],
+            ["IR consolidado", "Diferença entre posição bruta e valor líquido", status_badge(True), brl(kpis["ir_total"])],
+        ],
+        columns=["controle", "regra", "status", "leitura atual"],
+    )
+    st.markdown(
+        html_table(
+            checks,
+            col_labels={"controle": "Controle", "regra": "Regra", "status": "Status", "leitura atual": "Leitura atual"},
+            col_classes={"status": "center", "leitura atual": "num"},
+            allow_html_cols=["status"],
+        ),
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns([1.15, 1])
     with col1:
-        section("Comparativo automatizado")
+        section("Resumo executivo")
         st.markdown(
             f"""
             <div class="helper-card">
-                Esta área compara a carteira consolidada com as diretrizes da política. Hoje o monitoramento mostra que
-                <b>{pct(pos_fixado_pct)}</b> do patrimônio está em ativos classificados como pós-fixados/caixa.
-                Status atual: <b>{status}</b>.<br><br>
-                O foco do app agora é mostrar com precisão a composição por produto, a liquidez disponível e os dias desde aplicação,
-                especialmente nas <b>operações compromissadas</b>, para apoiar a leitura da eficiência do caixa e do ponto de virada do IOF.
+                A carteira está concentrada em ativos de caixa, pós-fixados e produtos isentos, com
+                <b>{pct(kpis['liquidez_d0_pct'])}</b> em liquidez operacional D+0/D+1.
+                A LCA foi mantida como <b>Renda Fixa Isenta</b>, mas sua liquidez agora entra como <b>D+0</b>,
+                preservando a leitura correta da liquidez diária.<br><br>
+                A partir desta versão, o app também exibe <b>valor bruto</b>, <b>IR estimado</b> e
+                <b>valor líquido</b> por ativo e no consolidado da conta.
             </div>
             """,
             unsafe_allow_html=True,
         )
+
     with col2:
-        section("Roadmap")
+        section("Próximos controles")
         roadmap = pd.DataFrame(
             [
-                ["Cadastro de limites por produto", "Próximo passo"],
-                ["Liquidez mínima por horizonte", "Estruturado"],
-                ["Comparativo política vs. carteira", "Ativo"],
-                ["Sugestão de realocação de novos recursos", "Próxima versão"],
-                ["Alertas automáticos", "Próxima versão"],
+                ["Limite por produto / emissor", "Próxima versão"],
+                ["Alertas de IOF nas compromissadas", "Ativo"],
+                ["Histórico diário por upload", "Próxima versão"],
+                ["Comparativo bruto vs. líquido", "Ativo"],
+                ["Exportação do detalhamento", "Ativo"],
             ],
             columns=["controle", "status"],
         )
         st.markdown(html_table(roadmap, col_labels={"controle": "Controle", "status": "Status"}), unsafe_allow_html=True)
 
+    if not non_comp_cfo.empty:
+        section("Alertas CFO")
+        alert = non_comp_cfo[["titular", "conta", "ativo", "produto", "valor_fmt"]].copy()
+        alert.columns = ["Titular", "Conta", "Ativo", "Produto", "Valor bruto"]
+        st.markdown(html_table(alert, col_classes={"Valor bruto": "num", "Conta": "center"}), unsafe_allow_html=True)
+
 
 # ------------------------ main ------------------------
 
 def main():
+    page_icon = Image.open(BOTUVERA_LOGO) if BOTUVERA_LOGO.exists() else "📊"
     st.set_page_config(
         page_title=APP_TITLE,
-        page_icon="📊",
+        page_icon=page_icon,
         layout="wide",
         initial_sidebar_state="collapsed",
     )
