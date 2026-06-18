@@ -64,17 +64,52 @@ def parse_money(x) -> float:
 
 
 def parse_date_br(x):
-    if pd.isna(x) or x is None or str(x).strip() in ["", "-", "—"]:
+    """Converte datas vindas do Excel/XP com tolerância a NaT, vazio e formatos mistos."""
+    if x is None:
         return pd.NaT
+    try:
+        if pd.isna(x):
+            return pd.NaT
+    except Exception:
+        pass
+
     if isinstance(x, (datetime, pd.Timestamp)):
-        return pd.to_datetime(x).date()
+        try:
+            ts = pd.to_datetime(x, errors="coerce")
+            return pd.NaT if pd.isna(ts) else ts.date()
+        except Exception:
+            return pd.NaT
+
+    if isinstance(x, date):
+        return x
+
     s = str(x).strip()
+    if s in ["", "-", "—", "nan", "NaT", "None"]:
+        return pd.NaT
+
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt).date()
         except Exception:
             pass
-    return pd.NaT
+
+    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    return pd.NaT if pd.isna(ts) else ts.date()
+
+
+def fmt_date_br(x) -> str:
+    """Formata data sem quebrar quando vier pd.NaT/NaN do pandas."""
+    if x is None:
+        return "—"
+    try:
+        if pd.isna(x):
+            return "—"
+    except Exception:
+        pass
+    try:
+        return pd.to_datetime(x).strftime("%d/%m/%Y")
+    except Exception:
+        return "—"
 
 
 def safe_div(a, b):
@@ -510,8 +545,8 @@ def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
 
     total = positions["valor"].sum()
     positions["participacao"] = positions["valor"] / total if total else 0
-    positions["aplicacao_fmt"] = positions["aplicacao"].apply(lambda x: x.strftime("%d/%m/%Y") if isinstance(x, date) else "—")
-    positions["vencimento_fmt"] = positions["vencimento"].apply(lambda x: x.strftime("%d/%m/%Y") if isinstance(x, date) else "—")
+    positions["aplicacao_fmt"] = positions["aplicacao"].apply(fmt_date_br)
+    positions["vencimento_fmt"] = positions["vencimento"].apply(fmt_date_br)
     positions["valor_fmt"] = positions["valor"].apply(brl)
     positions["participacao_fmt"] = positions["participacao"].apply(pct)
 
