@@ -473,12 +473,28 @@ def inject_css():
             background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
             border: 1px solid rgba(148,163,184,.12);
             border-radius: 22px;
-            overflow: hidden;
+            overflow-x: auto;
+            overflow-y: hidden;
             box-shadow: 0 12px 34px rgba(0,0,0,.12);
+            scrollbar-width: thin;
+            scrollbar-color: rgba(142, 183, 255, .45) rgba(15, 23, 42, .35);
+        }
+
+        .table-shell::-webkit-scrollbar {
+            height: 8px;
+        }
+        .table-shell::-webkit-scrollbar-track {
+            background: rgba(15,23,42,.35);
+            border-radius: 999px;
+        }
+        .table-shell::-webkit-scrollbar-thumb {
+            background: rgba(142,183,255,.45);
+            border-radius: 999px;
         }
 
         table.pretty {
-            width: 100%;
+            width: max-content;
+            min-width: 100%;
             border-collapse: collapse;
         }
         table.pretty thead {
@@ -503,8 +519,8 @@ def inject_css():
         table.pretty tbody tr:last-child td {
             border-bottom: none;
         }
-        table.pretty td.num, table.pretty th.num { text-align: right; }
-        table.pretty td.center, table.pretty th.center { text-align: center; }
+        table.pretty td.num, table.pretty th.num { text-align: right; white-space: nowrap; }
+        table.pretty td.center, table.pretty th.center { text-align: center; white-space: nowrap; }
         .empty-state {
             color:#94A3B8;
             padding: 22px;
