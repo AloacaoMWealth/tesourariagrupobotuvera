@@ -573,8 +573,13 @@ def inject_css():
 
         table.pretty {
             width: 100%;
-            min-width: 1080px;
+            min-width: 100%;
             border-collapse: collapse;
+            table-layout: auto;
+        }
+        
+        .table-shell.wide table.pretty {
+            min-width: 1380px;
         }
 
         table.pretty thead {
@@ -697,10 +702,8 @@ def inject_css():
 
         input,
         textarea,
-        [data-baseweb="input"] *,
-        [data-baseweb="select"] *,
-        [data-baseweb="radio"] *,
-        [data-testid="stFileUploader"] * {
+        [data-baseweb="input"] input,
+        [data-baseweb="select"] {
             color: #F8FAFC !important;
             background-color: #111D33 !important;
             border-color: rgba(148,163,184,.22) !important;
@@ -739,6 +742,31 @@ def inject_css():
             .mw-logo {
                 width: 150px;
             }
+        }
+        
+        div[role="radiogroup"] {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        
+        div[role="radiogroup"] label {
+            background: rgba(15,23,42,.78) !important;
+            border: 1px solid rgba(148,163,184,.18) !important;
+            border-radius: 999px !important;
+            padding: 7px 14px !important;
+            color: #F8FAFC !important;
+            font-weight: 800 !important;
+        }
+        
+        div[role="radiogroup"] label:hover {
+            border-color: rgba(141,183,255,.55) !important;
+            background: rgba(30,41,59,.92) !important;
+        }
+        
+        div[role="radiogroup"] input {
+            display: none !important;
         }
         </style>
         """,
@@ -812,6 +840,10 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
     classes = col_classes or {}
     allow_html_cols = set(allow_html_cols or [])
 
+    # Só usa tabela larga quando realmente precisa.
+    # Isso evita que tabelas pequenas fiquem com colunas gigantes/vazias.
+    shell_class = "table-shell wide" if len(columns) >= 7 else "table-shell"
+
     head = "".join(
         f'<th class="{classes.get(c, "")}">{html.escape(str(labels.get(c, c)))}</th>'
         for c in columns
@@ -822,6 +854,7 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
         tds = []
         for c in columns:
             val = row[c]
+
             if val is None or (isinstance(val, float) and pd.isna(val)):
                 txt = "—"
             else:
@@ -833,7 +866,7 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
         rows.append("<tr>" + "".join(tds) + "</tr>")
 
     return (
-        '<div class="table-shell">'
+        f'<div class="{shell_class}">'
         '<table class="pretty">'
         f'<thead><tr>{head}</tr></thead>'
         f'<tbody>{"".join(rows)}</tbody>'
