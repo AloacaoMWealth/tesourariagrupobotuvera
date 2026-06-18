@@ -11,7 +11,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
-from PIL import Image
 
 
 APP_TITLE = "Tesouraria Grupo Botuverá"
@@ -158,11 +157,11 @@ def inject_css():
         }
 
         .block-container {
-            max-width: 1460px !important;
+            max-width: 1320px !important;
             margin: 0 auto;
             padding-top: 1.15rem;
-            padding-left: 1.4rem;
-            padding-right: 1.4rem;
+            padding-left: 1.1rem;
+            padding-right: 1.1rem;
             padding-bottom: 3rem;
         }
 
@@ -294,20 +293,73 @@ def inject_css():
             background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
             border: 1px solid rgba(148,163,184,.16);
             border-radius: 22px;
-            padding: 16px 17px;
-            box-shadow: 0 14px 42px rgba(0,0,0,.16);
+            padding: 14px 15px;
+            min-height: 112px;
+            box-shadow: 0 12px 34px rgba(0,0,0,.14);
         }
         div[data-testid="stMetric"] label {
             color: #A9C7FF !important;
             text-transform: uppercase;
             letter-spacing: .16em;
-            font-size: .70rem !important;
+            font-size: .66rem !important;
             font-weight: 900;
         }
         div[data-testid="stMetricValue"] {
             font-weight: 900;
             color: #FFF;
+            font-size: 1.55rem !important;
         }
+        div[data-testid="stMetricDelta"] {
+            min-height: 18px !important;
+            font-size: .78rem !important;
+        }
+
+        .kpi-grid {
+            display:grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 14px;
+            margin: 10px 0 18px;
+        }
+        .kpi-card {
+            min-height: 108px;
+            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
+            border: 1px solid rgba(148,163,184,.14);
+            border-radius: 20px;
+            padding: 16px 18px;
+            box-shadow: 0 12px 34px rgba(0,0,0,.14);
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+        }
+        .kpi-label {
+            color:#A9C7FF;
+            text-transform:uppercase;
+            letter-spacing:.15em;
+            font-size:.66rem;
+            font-weight:900;
+            margin-bottom:10px;
+        }
+        .kpi-value {
+            color:#FFF;
+            font-size:1.55rem;
+            line-height:1.05;
+            font-weight:900;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .kpi-sub {
+            color:#94A3B8;
+            font-size:.78rem;
+            font-weight:700;
+            margin-top:8px;
+            min-height:18px;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .kpi-sub.good { color:#22C55E; }
+        @media (max-width: 1180px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 
         .panel {
             background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
@@ -527,6 +579,17 @@ def inject_css():
             justify-content:flex-end;
             margin: 10px 0 18px;
         }
+        div[data-testid="stExpander"] {
+            background: rgba(15,23,42,.34);
+            border: 1px solid rgba(148,163,184,.12);
+            border-radius: 16px;
+            margin: -4px 0 14px;
+        }
+        div[data-testid="stExpander"] summary {
+            color:#BFDBFE;
+            font-weight:800;
+        }
+
         .stDownloadButton > button {
             border-radius: 999px !important;
             border: 1px solid rgba(148,163,184,.22) !important;
@@ -552,8 +615,6 @@ def inject_css():
 def render_header(reference_date: str):
     logo = logo_base64(BOTUVERA_LOGO)
     logo_html = f'<img class="hero-logo" src="data:image/png;base64,{logo}" />' if logo else ""
-    title_logo_html = f'<img class="title-icon" src="data:image/png;base64,{logo}" />' if logo else ""
-    partner_logo = f'<img class="partner-mini" src="data:image/png;base64,{logo}" />' if logo else ""
     st.markdown(
         f"""
         <div class="hero-shell">
@@ -564,14 +625,14 @@ def render_header(reference_date: str):
                         <div class="mw-text">Wealth</div>
                     </div>
                     <div class="hero-title">
-                        <h1>Tesouraria <span>{title_logo_html} Grupo Botuverá</span></h1>
+                        <h1>Tesouraria <span>As a Service</span></h1>
                         <p>{SUBTITLE}</p>
                     </div>
                 </div>
                 <div class="hero-right">
                     <div class="hero-meta">
                         <div class="k">Data</div><div class="v">{reference_date}</div>
-                        <div class="k">Parceiro</div><div class="v partner-value">{partner_logo}<span>{PARTNER}</span></div>
+                        <div class="k">Parceiro</div><div class="v">{PARTNER}</div>
                         <div class="k">Gestor</div><div class="v">{GESTOR}</div>
                     </div>
                     {logo_html}
@@ -966,13 +1027,27 @@ def render_account_card(row, total_geral: float):
     )
 
 
+def render_kpi_cards(items):
+    cards = []
+    for label, value, sub, cls in items:
+        cards.append(
+            '<div class="kpi-card">'
+            f'<div class="kpi-label">{html.escape(str(label))}</div>'
+            f'<div class="kpi-value">{html.escape(str(value))}</div>'
+            f'<div class="kpi-sub {html.escape(str(cls or ""))}">{html.escape(str(sub or ""))}</div>'
+            '</div>'
+        )
+    st.markdown('<div class="kpi-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
+
+
 def render_visao_geral(positions, summary, kpis):
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Patrimônio bruto", brl(kpis["total"]))
-    c2.metric("Valor líquido", brl(kpis["total_liquido"]))
-    c3.metric("IR estimado", brl(kpis["ir_total"]))
-    c4.metric("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]))
-    c5.metric("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"])
+    render_kpi_cards([
+        ("Patrimônio bruto", brl(kpis["total"]), "Valor de posição", ""),
+        ("Valor líquido", brl(kpis["total_liquido"]), "Após IR estimado", ""),
+        ("IR estimado", brl(kpis["ir_total"]), "Bruto - líquido", ""),
+        ("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]), "good"),
+        ("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"], "good"),
+    ])
 
     section("Distribuição por produto")
     left, right = st.columns([1.25, 1])
@@ -1044,22 +1119,33 @@ def render_visao_geral(positions, summary, kpis):
 
 def render_por_titular(positions, summary, kpis):
     section("Posição por titular")
-    st.markdown(f"<div style='text-align:right;font-size:2rem;font-weight:900;margin:-12px 0 10px'>{brl(kpis['total'])}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align:right;font-size:1.45rem;font-weight:900;margin:-8px 0 14px;color:#F8FAFC;'>{brl(kpis['total'])}</div>", unsafe_allow_html=True)
 
     for _, row in summary.sort_values("patrimonio", ascending=False).iterrows():
         render_account_card(row, kpis["total"])
         detail = positions[positions["conta"].astype(str) == str(row["conta"])]
         if detail.empty:
             continue
-        produto = detail.groupby("produto", as_index=False).agg(valor=("valor", "sum"), valor_liquido=("valor_liquido", "sum"), ir=("ir", "sum")).sort_values("valor", ascending=False)
-        produto["participação"] = produto["valor"] / produto["valor"].sum()
-        produto["participação"] = produto["participação"].apply(pct)
-        produto["bruto (R$)"] = produto["valor"].apply(brl)
-        produto["IR (R$)"] = produto["ir"].apply(brl)
-        produto["líquido (R$)"] = produto["valor_liquido"].apply(brl)
-        produto = produto[["produto", "participação", "bruto (R$)", "IR (R$)", "líquido (R$)"]]
-        st.markdown(html_table(produto, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+        with st.expander(f"Ver posições de {row['titular']}", expanded=False):
+            produto = detail.groupby("produto", as_index=False).agg(
+                valor=("valor", "sum"),
+                valor_liquido=("valor_liquido", "sum"),
+                ir=("ir", "sum"),
+            ).sort_values("valor", ascending=False)
+            produto["participação"] = produto["valor"] / produto["valor"].sum()
+            produto["participação"] = produto["participação"].apply(pct)
+            produto["bruto (R$)"] = produto["valor"].apply(brl)
+            produto["IR (R$)"] = produto["ir"].apply(brl)
+            produto["líquido (R$)"] = produto["valor_liquido"].apply(brl)
+            produto = produto[["produto", "participação", "bruto (R$)", "IR (R$)", "líquido (R$)"]]
+            st.markdown(
+                html_table(
+                    produto,
+                    col_classes={"participação": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"},
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 def render_detalhamento(positions, summary):
@@ -1217,6 +1303,23 @@ def render_liquidez(positions, kpis):
         st.markdown(html_table(travado, col_classes={"liquidez": "center", "participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
 
 
+
+def infer_emissor(row):
+    asset = str(row.get("ativo", "")).upper()
+    produto = str(row.get("produto", ""))
+    if "BRADESCO" in asset:
+        return "Bradesco"
+    if "SAFRA" in asset:
+        return "Safra"
+    if "BNDES" in asset:
+        return "BNDES"
+    if "COMPROMISS" in produto.upper() or "COMPROMISS" in asset:
+        return "XP / Compromissadas"
+    if "SALDO" in asset:
+        return "Caixa"
+    return produto or "Não identificado"
+
+
 def status_badge(ok: bool, text_ok="OK", text_bad="Atenção"):
     return f'<span class="badge {"ok" if ok else "danger"}">{text_ok if ok else text_bad}</span>'
 
@@ -1225,7 +1328,6 @@ def render_politica(positions, kpis):
     section("Política de investimentos")
     pos_fixado = positions[positions["fator"].isin(["pos_fixado", "caixa", "isento"])]["valor"].sum()
     pos_fixado_pct = safe_div(pos_fixado, kpis["total"])
-    liquidez_ok = kpis["liquidez_d0_pct"] >= 0.80
     pos_ok = pos_fixado_pct >= MIN_POS_FIXADO
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1238,9 +1340,8 @@ def render_politica(positions, kpis):
     non_comp_cfo = positions[(positions["produto"] != "Op. Compromissadas") & (positions["valor"] >= VALIDACAO_CFO_VALOR)].copy()
     checks = pd.DataFrame(
         [
-            ["Segurança / risco", "Ativos classificados como caixa, pós-fixados ou isentos", status_badge(pos_ok), pct(pos_fixado_pct)],
-            ["Liquidez operacional", "Disponibilidade em D+0 ou D+1", status_badge(liquidez_ok), pct(kpis["liquidez_d0_pct"])],
-            ["Renda fixa isenta", "Produto isento, mas com liquidez operacional D+0", status_badge(True), brl(kpis["isenta"])],
+            ["Risco de mercado", "Mínimo de 80% em caixa/pós-fixado/isentos", status_badge(pos_ok), pct(pos_fixado_pct)],
+            ["Liquidez operacional", "Disponibilidade em D+0 ou D+1", status_badge(kpis["liquidez_d0_pct"] >= 0.80), pct(kpis["liquidez_d0_pct"])],
             ["Validação CFO", "Aplicações acima de R$ 5 mi, exceto compromissadas", status_badge(non_comp_cfo.empty), f"{len(non_comp_cfo)} alerta(s)"],
             ["IR consolidado", "Diferença entre posição bruta e valor líquido", status_badge(True), brl(kpis["ir_total"])],
         ],
@@ -1256,36 +1357,33 @@ def render_politica(positions, kpis):
         unsafe_allow_html=True,
     )
 
-    col1, col2 = st.columns([1.15, 1])
-    with col1:
-        section("Resumo executivo")
-        st.markdown(
-            f"""
-            <div class="helper-card">
-                A carteira está concentrada em ativos de caixa, pós-fixados e produtos isentos, com
-                <b>{pct(kpis['liquidez_d0_pct'])}</b> em liquidez operacional D+0/D+1.
-                A LCA foi mantida como <b>Renda Fixa Isenta</b>, mas sua liquidez agora entra como <b>D+0</b>,
-                preservando a leitura correta da liquidez diária.<br><br>
-                A partir desta versão, o app também exibe <b>valor bruto</b>, <b>IR estimado</b> e
-                <b>valor líquido</b> por ativo e no consolidado da conta.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with col2:
-        section("Próximos controles")
-        roadmap = pd.DataFrame(
-            [
-                ["Limite por produto / emissor", "Próxima versão"],
-                ["Alertas de IOF nas compromissadas", "Ativo"],
-                ["Histórico diário por upload", "Próxima versão"],
-                ["Comparativo bruto vs. líquido", "Ativo"],
-                ["Exportação do detalhamento", "Ativo"],
-            ],
-            columns=["controle", "status"],
-        )
-        st.markdown(html_table(roadmap, col_labels={"controle": "Controle", "status": "Status"}), unsafe_allow_html=True)
+    section("Limite por produto / emissor")
+    limite_emissor = min(kpis["total"] * 0.50, 10_000_000)
+    emissor_df = positions.copy()
+    emissor_df["emissor"] = emissor_df.apply(infer_emissor, axis=1)
+    emissores = emissor_df.groupby("emissor", as_index=False).agg(
+        valor=("valor", "sum"),
+        valor_liquido=("valor_liquido", "sum"),
+        ir=("ir", "sum"),
+    ).sort_values("valor", ascending=False)
+    emissores["% carteira"] = emissores["valor"] / kpis["total"]
+    emissores["limite"] = limite_emissor
+    emissores["status"] = emissores["valor"].apply(lambda v: status_badge(v <= limite_emissor))
+    emissores["% carteira"] = emissores["% carteira"].apply(pct)
+    emissores["limite"] = emissores["limite"].apply(brl)
+    emissores["valor bruto"] = emissores["valor"].apply(brl)
+    emissores["IR"] = emissores["ir"].apply(brl)
+    emissores["valor líquido"] = emissores["valor_liquido"].apply(brl)
+    emissores = emissores[["emissor", "valor bruto", "% carteira", "limite", "IR", "valor líquido", "status"]]
+    st.markdown(
+        html_table(
+            emissores,
+            col_labels={"emissor": "Produto / Emissor", "status": "Status"},
+            col_classes={"valor bruto": "num", "% carteira": "num", "limite": "num", "IR": "num", "valor líquido": "num", "status": "center"},
+            allow_html_cols=["status"],
+        ),
+        unsafe_allow_html=True,
+    )
 
     if not non_comp_cfo.empty:
         section("Alertas CFO")
