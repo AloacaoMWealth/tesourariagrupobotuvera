@@ -577,7 +577,7 @@ def inject_css():
             border-collapse: collapse;
             table-layout: auto;
         }
-        
+
         .table-shell.wide table.pretty {
             min-width: 1380px;
         }
@@ -717,6 +717,72 @@ def inject_css():
             color-scheme: dark !important;
         }
 
+
+        /* ===== FORÇA PADRÃO DOS MÉTRICOS DO STREAMLIT ===== */
+        div[data-testid="stMetric"] {
+            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96)) !important;
+            border: 1px solid rgba(148,163,184,.14) !important;
+            border-radius: 20px !important;
+            padding: 16px 18px !important;
+            min-height: 108px !important;
+            box-shadow: 0 12px 34px rgba(0,0,0,.14) !important;
+        }
+
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] label * {
+            color: #A9C7FF !important;
+            opacity: 1 !important;
+            text-transform: uppercase !important;
+            letter-spacing: .12em !important;
+            font-size: .70rem !important;
+            font-weight: 900 !important;
+        }
+
+        div[data-testid="stMetricValue"],
+        div[data-testid="stMetricValue"] * {
+            color: #F8FAFC !important;
+            opacity: 1 !important;
+            font-weight: 900 !important;
+        }
+
+        div[data-testid="stMetricDelta"],
+        div[data-testid="stMetricDelta"] * {
+            color: #22C55E !important;
+            opacity: 1 !important;
+            font-weight: 800 !important;
+        }
+
+        /* ===== RADIO / FILTROS SEM DEFORMAR O BASEWEB ===== */
+        div[role="radiogroup"] {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        div[role="radiogroup"] label {
+            background: rgba(15,23,42,.78) !important;
+            border: 1px solid rgba(148,163,184,.18) !important;
+            border-radius: 999px !important;
+            padding: 7px 14px !important;
+            color: #F8FAFC !important;
+            font-weight: 800 !important;
+        }
+
+        div[role="radiogroup"] label:hover {
+            border-color: rgba(141,183,255,.55) !important;
+            background: rgba(30,41,59,.92) !important;
+        }
+
+        div[role="radiogroup"] input {
+            display: none !important;
+        }
+
+        div[role="radiogroup"] label * {
+            color: #F8FAFC !important;
+            background: transparent !important;
+        }
+
         @media (max-width: 1180px) {
             .kpi-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -742,31 +808,6 @@ def inject_css():
             .mw-logo {
                 width: 150px;
             }
-        }
-        
-        div[role="radiogroup"] {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 14px;
-        }
-        
-        div[role="radiogroup"] label {
-            background: rgba(15,23,42,.78) !important;
-            border: 1px solid rgba(148,163,184,.18) !important;
-            border-radius: 999px !important;
-            padding: 7px 14px !important;
-            color: #F8FAFC !important;
-            font-weight: 800 !important;
-        }
-        
-        div[role="radiogroup"] label:hover {
-            border-color: rgba(141,183,255,.55) !important;
-            background: rgba(30,41,59,.92) !important;
-        }
-        
-        div[role="radiogroup"] input {
-            display: none !important;
         }
         </style>
         """,
@@ -840,8 +881,8 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
     classes = col_classes or {}
     allow_html_cols = set(allow_html_cols or [])
 
-    # Só usa tabela larga quando realmente precisa.
-    # Isso evita que tabelas pequenas fiquem com colunas gigantes/vazias.
+    # Tabela larga só quando realmente precisa.
+    # Evita que tabelas pequenas fiquem com colunas gigantes/vazias.
     shell_class = "table-shell wide" if len(columns) >= 7 else "table-shell"
 
     head = "".join(
@@ -854,7 +895,6 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
         tds = []
         for c in columns:
             val = row[c]
-
             if val is None or (isinstance(val, float) and pd.isna(val)):
                 txt = "—"
             else:
@@ -873,7 +913,6 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
         '</table>'
         '</div>'
     )
-
 
 def efficiency_badge(days) -> str:
     if days is None or pd.isna(days):
@@ -1306,20 +1345,18 @@ def render_account_card(row, total_geral: float):
 
 
 def render_visao_geral(positions, summary, kpis):
-    st.markdown(
-        """
-        <div class="kpi-grid">
-        """
-        + kpi_card("Patrimônio bruto", short_money(kpis["total"]), "")
-        + kpi_card("Valor líquido", short_money(kpis["total_liquido"]), "")
-        + kpi_card("IR estimado", brl(kpis["ir_total"]), "")
-        + kpi_card("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), f"↑ {brl(kpis['liquidez_d0'])}")
-        + kpi_card("Maior titular", pct(kpis["maior_titular_pct"]), f"↑ {kpis['maior_titular_nome']}")
-        + """
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Renderiza os cards sem um wrapper HTML externo para evitar que </div> apareça como texto
+    kpi_cols = st.columns(5)
+    cards = [
+        ("Patrimônio bruto", short_money(kpis["total"]), ""),
+        ("Valor líquido", short_money(kpis["total_liquido"]), ""),
+        ("IR estimado", brl(kpis["ir_total"]), ""),
+        ("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), f"↑ {brl(kpis['liquidez_d0'])}"),
+        ("Maior titular", pct(kpis["maior_titular_pct"]), f"↑ {kpis['maior_titular_nome']}"),
+    ]
+    for col, (label, value, sub) in zip(kpi_cols, cards):
+        with col:
+            st.markdown(kpi_card(label, value, sub), unsafe_allow_html=True)
 
     section("Distribuição por produto")
     left, right = st.columns([1.05, 1])
