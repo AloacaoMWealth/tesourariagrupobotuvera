@@ -158,10 +158,11 @@ def inject_css():
         }
 
         .block-container {
-            max-width: 100% !important;
-            padding-top: 1.1rem;
-            padding-left: 2.2rem;
-            padding-right: 2.2rem;
+            max-width: 1460px !important;
+            margin: 0 auto;
+            padding-top: 1.15rem;
+            padding-left: 1.4rem;
+            padding-right: 1.4rem;
             padding-bottom: 3rem;
         }
 
@@ -171,11 +172,11 @@ def inject_css():
         }
 
         .hero-shell {
-            background: linear-gradient(135deg, rgba(8,21,44,.92), rgba(5,16,35,.92));
-            border: 1px solid rgba(148,163,184,.16);
-            border-radius: 28px;
-            padding: 28px 28px 26px;
-            box-shadow: 0 24px 80px rgba(0,0,0,.26);
+            background: linear-gradient(135deg, rgba(8,21,44,.86), rgba(5,16,35,.86));
+            border: 1px solid rgba(148,163,184,.10);
+            border-radius: 26px;
+            padding: 24px 26px 24px;
+            box-shadow: 0 18px 55px rgba(0,0,0,.20);
             margin-bottom: 18px;
         }
 
@@ -218,7 +219,7 @@ def inject_css():
 
         .hero-title h1 {
             margin: 0;
-            font-size: 50px;
+            font-size: 46px;
             line-height: .95;
             letter-spacing: -.05em;
             font-weight: 900;
@@ -262,31 +263,39 @@ def inject_css():
         }
 
         .hero-logo {
-            width: 100px;
-            height: 100px;
+            width: 92px;
+            height: 92px;
             object-fit: contain;
-            background: rgba(255,255,255,.03);
-            border-radius: 18px;
-            padding: 8px;
+            background: rgba(255,255,255,.025);
+            border-radius: 16px;
+            padding: 7px;
         }
 
         .section-title {
             color: #A9C7FF;
-            letter-spacing: .28em;
+            letter-spacing: .22em;
             text-transform: uppercase;
             font-weight: 900;
-            font-size: .84rem;
-            margin: 16px 0 14px;
-            padding-left: 12px;
-            border-left: 5px solid #8DB7FF;
+            font-size: .76rem;
+            margin: 18px 0 12px;
+            padding-left: 10px;
+            border-left: 3px solid rgba(141,183,255,.72);
+            opacity: .96;
+        }
+
+        .soft-rule {
+            height: 1px;
+            width: 100%;
+            margin: 4px 0 18px;
+            background: linear-gradient(90deg, rgba(141,183,255,.22), rgba(148,163,184,.08), transparent);
         }
 
         div[data-testid="stMetric"] {
             background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
             border: 1px solid rgba(148,163,184,.16);
-            border-radius: 24px;
-            padding: 18px 18px;
-            box-shadow: 0 20px 60px rgba(0,0,0,.22);
+            border-radius: 22px;
+            padding: 16px 17px;
+            box-shadow: 0 14px 42px rgba(0,0,0,.16);
         }
         div[data-testid="stMetric"] label {
             color: #A9C7FF !important;
@@ -301,19 +310,27 @@ def inject_css():
         }
 
         .panel {
-            background: linear-gradient(135deg, rgba(30,41,59,.92), rgba(15,23,42,.92));
-            border: 1px solid rgba(148,163,184,.16);
-            border-radius: 26px;
-            padding: 22px;
-            box-shadow: 0 20px 60px rgba(0,0,0,.22);
+            background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
+            border: 1px solid rgba(148,163,184,.12);
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: 0 14px 42px rgba(0,0,0,.16);
+        }
+
+        div[data-testid="stPlotlyChart"] {
+            background: linear-gradient(135deg, rgba(30,41,59,.74), rgba(15,23,42,.76));
+            border: 1px solid rgba(148,163,184,.11);
+            border-radius: 24px;
+            padding: 14px 14px 10px;
+            box-shadow: 0 14px 42px rgba(0,0,0,.14);
         }
 
         .account-card {
-            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
-            border: 1px solid rgba(148,163,184,.16);
-            border-radius: 24px;
-            padding: 22px;
-            box-shadow: 0 20px 60px rgba(0,0,0,.18);
+            background: linear-gradient(135deg, rgba(30,41,59,.92), rgba(15,23,42,.92));
+            border: 1px solid rgba(148,163,184,.13);
+            border-radius: 22px;
+            padding: 20px;
+            box-shadow: 0 14px 44px rgba(0,0,0,.14);
             margin-bottom: 16px;
         }
 
@@ -401,11 +418,11 @@ def inject_css():
         .info { background: rgba(96,165,250,.16); color:#BFDBFE; }
 
         .table-shell {
-            background: linear-gradient(135deg, rgba(30,41,59,.92), rgba(15,23,42,.92));
-            border: 1px solid rgba(148,163,184,.16);
-            border-radius: 24px;
+            background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
+            border: 1px solid rgba(148,163,184,.12);
+            border-radius: 22px;
             overflow: hidden;
-            box-shadow: 0 20px 60px rgba(0,0,0,.16);
+            box-shadow: 0 12px 34px rgba(0,0,0,.12);
         }
 
         table.pretty {
@@ -417,18 +434,18 @@ def inject_css():
         }
         table.pretty th {
             color: #9EC5FF;
-            font-size: .76rem;
-            letter-spacing: .08em;
+            font-size: .72rem;
+            letter-spacing: .07em;
             text-transform: uppercase;
-            padding: 14px 16px;
+            padding: 12px 14px;
             text-align: left;
-            border-bottom: 1px solid rgba(148,163,184,.16);
+            border-bottom: 1px solid rgba(148,163,184,.13);
             white-space: nowrap;
         }
         table.pretty td {
             color: #F8FAFC;
-            padding: 14px 16px;
-            border-bottom: 1px solid rgba(148,163,184,.10);
+            padding: 12px 14px;
+            border-bottom: 1px solid rgba(148,163,184,.08);
             vertical-align: middle;
         }
         table.pretty tbody tr:last-child td {
@@ -566,7 +583,7 @@ def render_header(reference_date: str):
     )
 
 def section(title: str):
-    st.markdown(f'<div class="section-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">{html.escape(title)}</div><div class="soft-rule"></div>', unsafe_allow_html=True)
 
 
 def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_cols=None):
@@ -974,7 +991,7 @@ def render_visao_geral(positions, summary, kpis):
             )
         )
         fig.update_layout(
-            height=360,
+            height=330,
             margin=dict(l=10, r=10, t=10, b=10),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -982,9 +999,7 @@ def render_visao_geral(positions, summary, kpis):
             showlegend=False,
             annotations=[dict(text=brl(kpis["total"]), showarrow=False, font=dict(size=18, color="#FFF", family="Inter"))],
         )
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.markdown('</div>', unsafe_allow_html=True)
 
     with right:
         disp = prod.copy()
@@ -1006,7 +1021,7 @@ def render_visao_geral(positions, summary, kpis):
         )
     )
     fig.update_layout(
-        height=max(340, 90 + 55 * len(titular)),
+        height=max(315, 80 + 48 * len(titular)),
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -1014,9 +1029,7 @@ def render_visao_geral(positions, summary, kpis):
         xaxis=dict(tickformat=".0%", range=[0, max(1, titular["participacao_total"].max() * 1.1)], gridcolor="rgba(148,163,184,.10)"),
         yaxis=dict(gridcolor="rgba(148,163,184,.0)"),
     )
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    st.markdown('</div>', unsafe_allow_html=True)
 
     section("Detalhamento por produto")
     prod_table = prod.copy()
@@ -1175,7 +1188,7 @@ def render_liquidez(positions, kpis):
         )
     )
     fig.update_layout(
-        height=max(280, 90 + 58 * len(liq)),
+        height=max(260, 80 + 50 * len(liq)),
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -1183,9 +1196,7 @@ def render_liquidez(positions, kpis):
         xaxis=dict(tickformat=".0%", range=[0, 1], gridcolor="rgba(148,163,184,.10)"),
         yaxis=dict(gridcolor="rgba(148,163,184,.0)"),
     )
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    st.markdown('</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
