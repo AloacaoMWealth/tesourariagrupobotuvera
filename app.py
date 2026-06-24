@@ -1403,21 +1403,20 @@ def render_account_card(row, total_geral: float):
 
     st.markdown(
         f"""
-        <div class="account-card">
-            <div class="account-head">
-                <div class="account-left">
+        <div class="account-card" style="padding:16px 18px;">
+            <div class="account-head" style="align-items:center;">
+                <div class="account-left" style="align-items:center;">
                     <div class="avatar">{html.escape(str(row['iniciais']))}</div>
                     <div>
-                        <div class="name">{html.escape(str(row['titular']))}</div>
-                        <div class="muted">Conta {html.escape(str(row['conta']))} • {int(row['posicoes'])} posição(ões)</div>
+                        <div class="name" style="margin-bottom:0;">{html.escape(str(row['titular']))}</div>
                     </div>
                 </div>
-                <div style="min-width:170px;">
-                    <div class="money">{brl(row['patrimonio'])}</div>
-                    <div class="submoney">{participacao} do total</div>
+                <div style="min-width:220px; text-align:left;">
+                    <div class="money" style="font-size:1.15rem; margin-bottom:2px;">{brl(row['patrimonio'])}</div>
+                    <div class="submoney" style="margin-top:0;">{participacao} do total</div>
                 </div>
             </div>
-            <div class="bar-bg">
+            <div class="bar-bg" style="margin-top:12px;">
                 <div class="bar-fill" style="width:{max(min(100 * safe_div(row['patrimonio'], total_geral), 100), 0):.2f}%"></div>
             </div>
         </div>
