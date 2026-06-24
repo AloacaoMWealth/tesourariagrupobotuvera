@@ -1,9 +1,8 @@
-
 import base64
 import html
 import io
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -12,26 +11,33 @@ import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
-
 APP_TITLE = "Tesouraria Grupo Botuverá"
 SUBTITLE = "Gestão Profissional do Caixa Empresarial"
 PARTNER = "Grupo Botuverá"
 GESTOR = "M Wealth"
-DEFAULT_POSITIONS_DIR = Path("data/positions")
-CLIENT_CONFIG = Path("data/config/clientes.csv")
-BOTUVERA_LOGO = Path("data/assets/botuvera_logo.png")
 
-# Política de Investimentos
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_POSITIONS_DIR = BASE_DIR / "data" / "positions"
+CLIENT_CONFIG = BASE_DIR / "data" / "config" / "clientes.csv"
+BOTUVERA_LOGO = BASE_DIR / "data" / "assets" / "botuvera_logo.png"
+MWEALTH_LOGO = BASE_DIR / "mwealth-light.png"
+FUND_APPLICATIONS_FILE = BASE_DIR / "data" / "config" / "aplicacoes_fundos.xlsx"
+FUND_APPLICATIONS_FALLBACK = BASE_DIR / "Aplicações Fundos de Investimentos Botuverá.xlsx"
+
 MIN_POS_FIXADO = 0.80
 VALIDACAO_CFO_VALOR = 5_000_000
-IOF_ALERT_DAYS = 22
-IOF_WARN_DAYS = 18
-IOF_OK_DAYS = 14
+LIMITE_EMISSOR_VALOR = 10_000_000
+LIMITE_EMISSOR_PCT = 0.50
 
 LIQUIDITY_ORDER = ["D+0", "D+1", "D+31", "N/A"]
 
+IOF_TABLE = {
+    1: 96, 2: 93, 3: 90, 4: 86, 5: 83, 6: 80, 7: 76, 8: 73, 9: 70,
+    10: 66, 11: 63, 12: 60, 13: 56, 14: 53, 15: 50, 16: 46, 17: 43,
+    18: 40, 19: 36, 20: 33, 21: 30, 22: 26, 23: 23, 24: 20, 25: 16,
+    26: 13, 27: 10, 28: 6, 29: 3,
+}
 
-# ------------------------ utilidades ------------------------
 
 def brl(v: float) -> str:
     try:
@@ -51,11 +57,32 @@ def pct(v: float) -> str:
     return txt.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def short_money(v: float) -> str:
+    try:
+        v = float(v or 0)
+    except Exception:
+        v = 0
+    if abs(v) >= 1_000_000:
+        return f"R$ {v / 1_000_000:,.2f} mi".replace(",", "X").replace(".", ",").replace("X", ".")
+    return brl(v)
+
+
 def safe_div(a, b):
     try:
         return 0.0 if not b else float(a) / float(b)
     except Exception:
         return 0.0
+
+
+def normalize_text(s) -> str:
+    s = str(s or "").lower().strip()
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace("á", "a").replace("à", "a").replace("ã", "a").replace("â", "a")
+    s = s.replace("é", "e").replace("ê", "e")
+    s = s.replace("í", "i")
+    s = s.replace("ó", "o").replace("ô", "o").replace("õ", "o")
+    s = s.replace("ú", "u").replace("ç", "c")
+    return s
 
 
 def parse_money(x) -> float:
@@ -74,7 +101,7 @@ def parse_money(x) -> float:
     except Exception:
         pass
     s = str(x).strip()
-    if s in ["", "-", "—", "nan", "None"]:
+    if s in ["", "-", "—", "nan", "None", "NaT"]:
         return 0.0
     s = s.replace("R$", "").replace("%", "").strip()
     s = s.replace(".", "").replace(",", ".")
@@ -136,7 +163,17 @@ def logo_base64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
-# ------------------------ css / layout ------------------------
+def iof_rate_by_days(days: int) -> int:
+    try:
+        d = int(days)
+    except Exception:
+        return 0
+    if d <= 0:
+        return 100
+    if d >= 30:
+        return 0
+    return IOF_TABLE.get(d, 0)
+
 
 def inject_css():
     st.markdown(
@@ -144,17 +181,41 @@ def inject_css():
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 
+        :root {
+            color-scheme: dark !important;
+            --bg-main: #03122b;
+            --bg-panel: #0f1b31;
+            --border-soft: rgba(148,163,184,.16);
+            --text-main: #F8FAFC;
+            --text-soft: #CBD5E1;
+            --text-muted: #94A3B8;
+            --accent: #8DB7FF;
+            --accent-2: #9EC5FF;
+            --green: #22C55E;
+            --red: #F87171;
+            --yellow: #FBBF24;
+        }
+
         html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif;
+            font-family: 'Inter', sans-serif !important;
+            color: var(--text-main) !important;
+            background: var(--bg-main) !important;
         }
 
         .stApp {
             background:
                 radial-gradient(circle at 12% 0%, rgba(59,130,246,.16), transparent 28%),
                 radial-gradient(circle at 100% 0%, rgba(15,118,110,.10), transparent 22%),
-                linear-gradient(180deg, #03122b 0%, #04152e 46%, #031126 100%);
-            color: #F8FAFC;
+                linear-gradient(180deg, #03122b 0%, #04152e 46%, #031126 100%) !important;
+            color: var(--text-main) !important;
         }
+
+        .stApp, .main, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+            background-color: transparent !important;
+            color: var(--text-main) !important;
+        }
+
+        [data-testid="stToolbar"], [data-testid="stDecoration"] { background: transparent !important; }
 
         .block-container {
             max-width: 1320px !important;
@@ -166,492 +227,208 @@ def inject_css():
         }
 
         section[data-testid="stSidebar"] {
-            background: #09162F;
+            background: #09162F !important;
             border-right: 1px solid rgba(148, 163, 184, .15);
         }
 
         .hero-shell {
-            background: linear-gradient(135deg, rgba(8,21,44,.86), rgba(5,16,35,.86));
+            background: linear-gradient(135deg, rgba(8,21,44,.88), rgba(5,16,35,.88));
             border: 1px solid rgba(148,163,184,.10);
             border-radius: 26px;
-            padding: 24px 26px 24px;
+            padding: 24px 26px;
             box-shadow: 0 18px 55px rgba(0,0,0,.20);
             margin-bottom: 18px;
         }
 
-        .hero {
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap: 28px;
-        }
+        .hero { display:flex; align-items:center; justify-content:space-between; gap: 28px; }
+        .hero-left { display:flex; align-items:center; gap: 28px; min-width:0; }
+        .mw-mark { display:flex; align-items:center; border-right: 1px solid rgba(148,163,184,.16); padding-right: 30px; min-width:0; }
+        .mw-logo { width: 178px; max-width: 178px; height:auto; display:block; object-fit:contain; }
+        .mw-logo-fallback { color:#F8FAFC; font-size:1.35rem; font-weight:900; white-space:nowrap; }
 
-        .hero-left {
-            display:flex;
-            align-items:center;
-            gap: 22px;
-            min-width:0;
-        }
+        .hero-title h1 { margin:0; line-height:.95; font-weight:900; color:#F8FAFC; }
+        .title-line { display:flex; align-items:baseline; gap:26px; flex-wrap:wrap; }
+        .title-main { font-size:46px; letter-spacing:-.045em; color:#F8FAFC; }
+        .title-service { font-size:46px; letter-spacing:-.035em; color:#9EC5FF; font-style:italic; }
+        .hero-title p { margin:12px 0 0; color:#A9C7FF; font-weight:700; font-size:1rem; }
 
-        .mw-mark {
-            display:flex;
-            align-items:center;
-            gap: 12px;
-            border-right: 1px solid rgba(148,163,184,.16);
-            padding-right: 22px;
-            min-width: 0;
-        }
-
-        .mw-box {
-            width: 58px;
-            height: 58px;
-            border: 3px solid #8DB7FF;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            color:#FFF;
-            font-size: 30px;
-            font-weight: 900;
-        }
-
-        .mw-text { font-size: 18px; font-weight: 800; color:#F8FAFC; }
-
-        .hero-title h1 {
-            margin: 0;
-            font-size: 46px;
-            line-height: .95;
-            letter-spacing: -.05em;
-            font-weight: 900;
-            color:#F8FAFC;
-        }
-
-        .hero-title h1 span { color:#9EC5FF; font-style: italic; display:inline-flex; align-items:center; gap:12px; }
-        .title-icon { width:44px; height:44px; object-fit:contain; vertical-align:middle; margin-bottom:-4px; }
-        .hero-title p {
-            margin: 10px 0 0;
-            color: #A9C7FF;
-            font-weight: 700;
-            font-size: 1rem;
-        }
-
-        .hero-right {
-            display:flex;
-            align-items:center;
-            gap: 22px;
-        }
-
-        .hero-meta {
-            display:grid;
-            grid-template-columns:auto auto;
-            gap: 8px 20px;
-            align-items:center;
-        }
-
-        .hero-meta .k {
-            color:#9EC5FF;
-            text-transform:uppercase;
-            letter-spacing:.17em;
-            font-size: .72rem;
-            font-weight: 800;
-        }
-
-        .hero-meta .v {
-            color:#FFF;
-            font-weight: 800;
-            font-size: .90rem;
-        }
-
-        .hero-logo {
-            width: 92px;
-            height: 92px;
-            object-fit: contain;
-            background: rgba(255,255,255,.025);
-            border-radius: 16px;
-            padding: 7px;
-        }
+        .hero-right { display:flex; align-items:center; gap:22px; }
+        .hero-meta { display:grid; grid-template-columns:auto auto; gap:8px 20px; align-items:center; }
+        .hero-meta .k { color:#9EC5FF; text-transform:uppercase; letter-spacing:.17em; font-size:.72rem; font-weight:800; }
+        .hero-meta .v { color:#FFF; font-weight:800; font-size:.90rem; }
+        .hero-logo { width:92px; height:92px; object-fit:contain; background:rgba(255,255,255,.025); border-radius:16px; padding:7px; }
 
         .section-title {
-            color: #A9C7FF;
-            letter-spacing: .22em;
-            text-transform: uppercase;
-            font-weight: 900;
-            font-size: .76rem;
-            margin: 18px 0 12px;
-            padding-left: 10px;
-            border-left: 3px solid rgba(141,183,255,.72);
-            opacity: .96;
+            color:#A9C7FF;
+            letter-spacing:.22em;
+            text-transform:uppercase;
+            font-weight:900;
+            font-size:.76rem;
+            margin:18px 0 12px;
+            padding-left:10px;
+            border-left:3px solid rgba(141,183,255,.72);
+            opacity:.96;
         }
+        .soft-rule { height:1px; width:100%; margin:4px 0 18px; background:linear-gradient(90deg, rgba(141,183,255,.22), rgba(148,163,184,.08), transparent); }
 
-        .soft-rule {
-            height: 1px;
-            width: 100%;
-            margin: 4px 0 18px;
-            background: linear-gradient(90deg, rgba(141,183,255,.22), rgba(148,163,184,.08), transparent);
-        }
-
-        div[data-testid="stMetric"] {
-            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
-            border: 1px solid rgba(148,163,184,.16);
-            border-radius: 22px;
-            padding: 14px 15px;
-            min-height: 112px;
-            box-shadow: 0 12px 34px rgba(0,0,0,.14);
-        }
-        div[data-testid="stMetric"] label {
-            color: #A9C7FF !important;
-            text-transform: uppercase;
-            letter-spacing: .16em;
-            font-size: .66rem !important;
-            font-weight: 900;
-        }
-        div[data-testid="stMetricValue"] {
-            font-weight: 900;
-            color: #FFF;
-            font-size: 1.55rem !important;
-        }
-        div[data-testid="stMetricDelta"] {
-            min-height: 18px !important;
-            font-size: .78rem !important;
-        }
-
-        .kpi-grid {
-            display:grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 14px;
-            margin: 10px 0 18px;
-        }
+        .kpi-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:14px; margin:10px 0 18px; }
         .kpi-card {
-            min-height: 108px;
-            background: linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
-            border: 1px solid rgba(148,163,184,.14);
-            border-radius: 20px;
-            padding: 16px 18px;
-            box-shadow: 0 12px 34px rgba(0,0,0,.14);
+            min-height:108px;
+            background:linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96));
+            border:1px solid rgba(148,163,184,.14);
+            border-radius:20px;
+            padding:16px 18px;
+            box-shadow:0 12px 34px rgba(0,0,0,.14);
             display:flex;
             flex-direction:column;
             justify-content:center;
+            text-align:left;
         }
-        .kpi-label {
-            color:#A9C7FF;
-            text-transform:uppercase;
-            letter-spacing:.15em;
-            font-size:.66rem;
-            font-weight:900;
-            margin-bottom:10px;
-        }
-        .kpi-value {
-            color:#FFF;
-            font-size:1.55rem;
-            line-height:1.05;
-            font-weight:900;
-            white-space:nowrap;
-            overflow:hidden;
-            text-overflow:ellipsis;
-        }
-        .kpi-sub {
-            color:#94A3B8;
-            font-size:.78rem;
-            font-weight:700;
-            margin-top:8px;
-            min-height:18px;
-            white-space:nowrap;
-            overflow:hidden;
-            text-overflow:ellipsis;
-        }
+        .kpi-label { color:#A9C7FF; text-transform:uppercase; letter-spacing:.15em; font-size:.66rem; font-weight:900; margin-bottom:10px; }
+        .kpi-value { color:#FFF; font-size:1.55rem; line-height:1.05; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .kpi-sub { color:#94A3B8; font-size:.78rem; font-weight:700; margin-top:8px; min-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .kpi-sub.good { color:#22C55E; }
-        @media (max-width: 1180px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 
-        .panel {
-            background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
-            border: 1px solid rgba(148,163,184,.12);
-            border-radius: 24px;
-            padding: 20px;
-            box-shadow: 0 14px 42px rgba(0,0,0,.16);
+        .panel, .account-card {
+            background:linear-gradient(135deg, rgba(30,41,59,.88), rgba(15,23,42,.90));
+            border:1px solid rgba(148,163,184,.12);
+            border-radius:22px;
+            padding:18px;
+            box-shadow:0 14px 42px rgba(0,0,0,.14);
+            text-align:left;
         }
+        .account-card { margin-bottom:14px; }
+        .account-head { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; }
+        .account-left { display:flex; gap:14px; align-items:flex-start; }
+        .avatar { width:50px; height:50px; border-radius:16px; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#8DB7FF,#CABFFD); color:#FFF; font-weight:900; font-size:1.08rem; flex:0 0 auto; }
+        .name { color:#FFF; font-size:1.12rem; font-weight:800; margin-bottom:2px; }
+        .muted { color:#94A3B8; font-size:.86rem; }
+        .money { color:#FFF; font-size:1.35rem; font-weight:900; text-align:left; }
+        .submoney { color:#9EC5FF; font-size:.80rem; font-weight:800; text-align:left; margin-top:4px; }
+        .bar-bg { margin-top:14px; width:100%; height:8px; border-radius:999px; background:rgba(148,163,184,.16); overflow:hidden; }
+        .bar-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#8DB7FF,#CABFFD,#6EE7B7,#F7C561); }
 
         div[data-testid="stPlotlyChart"] {
-            background: linear-gradient(135deg, rgba(30,41,59,.74), rgba(15,23,42,.76));
-            border: 1px solid rgba(148,163,184,.11);
-            border-radius: 24px;
-            padding: 14px 14px 10px;
-            box-shadow: 0 14px 42px rgba(0,0,0,.14);
+            background:linear-gradient(135deg, rgba(30,41,59,.74), rgba(15,23,42,.76));
+            border:1px solid rgba(148,163,184,.11);
+            border-radius:24px;
+            padding:14px 14px 10px;
+            box-shadow:0 14px 42px rgba(0,0,0,.14);
         }
 
-        .account-card {
-            background: linear-gradient(135deg, rgba(30,41,59,.92), rgba(15,23,42,.92));
-            border: 1px solid rgba(148,163,184,.13);
-            border-radius: 22px;
-            padding: 20px;
-            box-shadow: 0 14px 44px rgba(0,0,0,.14);
-            margin-bottom: 16px;
-        }
-
-        .account-head {
-            display:flex;
-            justify-content:space-between;
-            gap: 18px;
-            align-items:flex-start;
-        }
-
-        .account-left {
-            display:flex;
-            gap: 14px;
-            align-items:flex-start;
-        }
-
-        .avatar {
-            width: 50px;
-            height: 50px;
-            border-radius: 16px;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            background: linear-gradient(135deg,#8DB7FF,#CABFFD);
-            color: #FFF;
-            font-weight: 900;
-            font-size: 1.08rem;
-            flex: 0 0 auto;
-        }
-
-        .name {
-            color:#FFF;
-            font-size: 1.18rem;
-            font-weight: 800;
-            margin-bottom: 2px;
-        }
-
-        .muted {
-            color:#94A3B8;
-            font-size: .86rem;
-        }
-
-        .money {
-            color:#FFF;
-            font-size: 1.45rem;
-            font-weight: 900;
-            text-align:right;
-        }
-
-        .submoney {
-            color:#9EC5FF;
-            font-size: .82rem;
-            font-weight: 800;
-            text-align:right;
-            margin-top: 4px;
-        }
-
-        .bar-bg {
-            margin-top: 14px;
-            width:100%;
-            height: 9px;
-            border-radius: 999px;
-            background: rgba(148,163,184,.16);
-            overflow: hidden;
-        }
-
-        .bar-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, #8DB7FF, #CABFFD, #6EE7B7, #F7C561);
-        }
-
-        .badge {
+        .badge, .tax-pill, .liquidity-pill, .iof-pill {
             display:inline-block;
-            padding: 4px 9px;
-            border-radius: 999px;
-            font-size: .72rem;
-            font-weight: 900;
-            border: 1px solid rgba(255,255,255,.16);
-            margin-left: 8px;
+            padding:5px 9px;
+            border-radius:999px;
+            font-size:.72rem;
+            font-weight:900;
+            border:1px solid rgba(255,255,255,.14);
+            white-space:nowrap;
         }
-        .ok { background: rgba(16,185,129,.16); color:#6EE7B7; }
-        .warn { background: rgba(245,158,11,.16); color:#FCD34D; }
-        .danger { background: rgba(239,68,68,.16); color:#FCA5A5; }
-        .info { background: rgba(96,165,250,.16); color:#BFDBFE; }
+        .ok, .liquidity-pill { background:rgba(16,185,129,.14); color:#6EE7B7; }
+        .warn, .iof-pill { background:rgba(245,158,11,.16); color:#FCD34D; }
+        .danger, .tax-pill { background:rgba(239,68,68,.14); color:#FCA5A5; }
+        .info { background:rgba(96,165,250,.16); color:#BFDBFE; }
 
         .table-shell {
-            background: linear-gradient(135deg, rgba(30,41,59,.86), rgba(15,23,42,.88));
-            border: 1px solid rgba(148,163,184,.12);
-            border-radius: 22px;
-            overflow-x: auto;
-            overflow-y: hidden;
-            box-shadow: 0 12px 34px rgba(0,0,0,.12);
-            scrollbar-width: thin;
-            scrollbar-color: rgba(142, 183, 255, .45) rgba(15, 23, 42, .35);
+            background:linear-gradient(135deg, rgba(30,41,59,.88), rgba(15,23,42,.90));
+            border:1px solid rgba(148,163,184,.12);
+            border-radius:20px;
+            overflow-x:auto;
+            overflow-y:hidden;
+            width:100%;
+            max-width:100%;
+            box-shadow:0 12px 34px rgba(0,0,0,.12);
+            scrollbar-width:thin;
+            scrollbar-color:rgba(142,183,255,.45) rgba(15,23,42,.35);
         }
+        .table-shell::-webkit-scrollbar { height:8px; }
+        .table-shell::-webkit-scrollbar-track { background:rgba(15,23,42,.35); border-radius:999px; }
+        .table-shell::-webkit-scrollbar-thumb { background:rgba(142,183,255,.45); border-radius:999px; }
 
-        .table-shell::-webkit-scrollbar {
-            height: 8px;
-        }
-        .table-shell::-webkit-scrollbar-track {
-            background: rgba(15,23,42,.35);
-            border-radius: 999px;
-        }
-        .table-shell::-webkit-scrollbar-thumb {
-            background: rgba(142,183,255,.45);
-            border-radius: 999px;
-        }
+        table.pretty { width:100%; min-width:100%; border-collapse:collapse; table-layout:auto; }
+        .table-shell.wide table.pretty { min-width:1380px; }
+        table.pretty thead { background:rgba(255,255,255,.035); }
+        table.pretty th { color:#9EC5FF !important; font-size:.70rem; letter-spacing:.08em; text-transform:uppercase; padding:12px 14px; text-align:left; border-bottom:1px solid rgba(148,163,184,.14); white-space:nowrap; }
+        table.pretty td { color:#F8FAFC !important; padding:12px 14px; border-bottom:1px solid rgba(148,163,184,.08); vertical-align:middle; font-weight:650; line-height:1.45; text-align:left; }
+        table.pretty tbody tr:last-child td { border-bottom:none; }
+        table.pretty td.num, table.pretty th.num, table.pretty td.center, table.pretty th.center { text-align:left; white-space:nowrap; }
+        table.pretty td.wrap { white-space:normal; min-width:190px; }
+        .empty-state { color:#94A3B8; padding:22px; }
 
-        table.pretty {
-            width: max-content;
-            min-width: 100%;
-            border-collapse: collapse;
-        }
-        table.pretty thead {
-            background: rgba(255,255,255,.03);
-        }
-        table.pretty th {
-            color: #9EC5FF;
-            font-size: .72rem;
-            letter-spacing: .07em;
-            text-transform: uppercase;
-            padding: 12px 14px;
-            text-align: left;
-            border-bottom: 1px solid rgba(148,163,184,.13);
-            white-space: nowrap;
-        }
-        table.pretty td {
-            color: #F8FAFC;
-            padding: 12px 14px;
-            border-bottom: 1px solid rgba(148,163,184,.08);
-            vertical-align: middle;
-        }
-        table.pretty tbody tr:last-child td {
-            border-bottom: none;
-        }
-        table.pretty td.num, table.pretty th.num { text-align: right; white-space: nowrap; }
-        table.pretty td.center, table.pretty th.center { text-align: center; white-space: nowrap; }
-        .empty-state {
-            color:#94A3B8;
-            padding: 22px;
-        }
+        .stTabs [data-baseweb="tab-list"] { gap:24px; border-bottom:1px solid rgba(148,163,184,.14); }
+        .stTabs [data-baseweb="tab"] { color:#A5B4FC !important; font-weight:800; padding-left:0; padding-right:0; background:transparent !important; }
+        .stTabs [aria-selected="true"] { color:#FFF !important; border-bottom:3px solid #8DB7FF; }
 
-        .helper-card {
-            background: rgba(59,130,246,.08);
-            border: 1px solid rgba(96,165,250,.15);
-            border-radius: 22px;
-            padding: 18px;
-            color:#CBD5E1;
-            line-height: 1.7;
-        }
+        div[role="radiogroup"] { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+        div[role="radiogroup"] label { background:rgba(15,23,42,.78) !important; border:1px solid rgba(148,163,184,.18) !important; border-radius:999px !important; padding:7px 14px !important; color:#F8FAFC !important; font-weight:800 !important; }
+        div[role="radiogroup"] label:hover { border-color:rgba(141,183,255,.55) !important; background:rgba(30,41,59,.92) !important; }
+        div[role="radiogroup"] input { display:none !important; }
+        div[role="radiogroup"] label * { color:#F8FAFC !important; background:transparent !important; }
 
-        .footer {
-            text-align: center;
-            color: #64748B;
-            font-size: .78rem;
-            margin-top: 34px;
+        div[data-testid="stMetric"] {
+            background:linear-gradient(135deg, rgba(30,41,59,.96), rgba(15,23,42,.96)) !important;
+            border:1px solid rgba(148,163,184,.14) !important;
+            border-radius:20px !important;
+            padding:16px 18px !important;
+            min-height:108px !important;
+            box-shadow:0 12px 34px rgba(0,0,0,.14) !important;
         }
+        div[data-testid="stMetric"] label, div[data-testid="stMetric"] label * { color:#A9C7FF !important; opacity:1 !important; text-transform:uppercase !important; letter-spacing:.12em !important; font-size:.70rem !important; font-weight:900 !important; }
+        div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] * { color:#F8FAFC !important; opacity:1 !important; font-weight:900 !important; }
+        div[data-testid="stMetricDelta"], div[data-testid="stMetricDelta"] * { color:#22C55E !important; opacity:1 !important; font-weight:800 !important; }
 
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 24px;
-            border-bottom: 1px solid rgba(148,163,184,.14);
+        .stDownloadButton > button, .stButton > button {
+            border-radius:999px !important;
+            border:1px solid rgba(148,163,184,.22) !important;
+            background:#111D33 !important;
+            color:#F8FAFC !important;
+            font-weight:800 !important;
+            padding:.35rem .85rem !important;
+            min-height:2.1rem !important;
+            box-shadow:none !important;
         }
-        .stTabs [data-baseweb="tab"] {
-            color: #A5B4FC;
-            font-weight: 800;
-            padding-left: 0;
-            padding-right: 0;
-        }
-        .stTabs [aria-selected="true"] {
-            color: #FFF !important;
-            border-bottom: 3px solid #8DB7FF;
-        }
+        .stDownloadButton > button:hover, .stButton > button:hover { background:#17243D !important; border-color:rgba(141,183,255,.55) !important; color:#FFFFFF !important; }
 
+        input, textarea, [data-baseweb="input"] input, [data-baseweb="select"] { color:#F8FAFC !important; background-color:#111D33 !important; border-color:rgba(148,163,184,.22) !important; }
+        label, p, span, div, button { color-scheme:dark !important; }
+        .footer { text-align:center; color:#64748B; font-size:.78rem; margin-top:34px; }
 
-        .partner-value {
-            display:flex;
-            align-items:center;
-            gap:8px;
-        }
-        .partner-mini {
-            width:22px;
-            height:22px;
-            object-fit:contain;
-            border-radius:6px;
-            background: rgba(255,255,255,.04);
-        }
-        .tax-pill {
-            display:inline-block;
-            padding: 5px 9px;
-            border-radius: 999px;
-            font-size:.72rem;
-            font-weight:900;
-            color:#FCA5A5;
-            background: rgba(239,68,68,.13);
-            border: 1px solid rgba(239,68,68,.20);
-        }
-        .liquidity-pill {
-            display:inline-block;
-            padding: 5px 9px;
-            border-radius: 999px;
-            font-size:.72rem;
-            font-weight:900;
-            color:#6EE7B7;
-            background: rgba(16,185,129,.13);
-            border: 1px solid rgba(16,185,129,.20);
-        }
-        .download-line {
-            display:flex;
-            justify-content:flex-end;
-            margin: 10px 0 18px;
-        }
-        div[data-testid="stExpander"] {
-            background: rgba(15,23,42,.34);
-            border: 1px solid rgba(148,163,184,.12);
-            border-radius: 16px;
-            margin: -4px 0 14px;
-        }
-        div[data-testid="stExpander"] summary {
-            color:#BFDBFE;
-            font-weight:800;
-        }
-
-        .stDownloadButton > button {
-            border-radius: 999px !important;
-            border: 1px solid rgba(148,163,184,.22) !important;
-            background: rgba(15,23,42,.78) !important;
-            color: #BFDBFE !important;
-            font-weight: 800 !important;
-            padding: 0.35rem 0.8rem !important;
-            min-height: 2.1rem !important;
-        }
-
-        @media (max-width: 1100px) {
-            .hero { flex-direction: column; align-items: flex-start; }
-            .hero-right { width: 100%; justify-content: space-between; }
-            .hero-title h1 { font-size: 38px; }
-        }
+        @media (max-width:1180px) { .kpi-grid { grid-template-columns:repeat(2, minmax(0,1fr)); } }
+        @media (max-width:1100px) { .hero { flex-direction:column; align-items:flex-start; } .hero-right { width:100%; justify-content:space-between; } .title-main, .title-service { font-size:38px; } .mw-logo { width:150px; } }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-
 def render_header(reference_date: str):
-    logo = logo_base64(BOTUVERA_LOGO)
-    logo_html = f'<img class="hero-logo" src="data:image/png;base64,{logo}" />' if logo else ""
+    botuvera_logo = logo_base64(BOTUVERA_LOGO)
+    mwealth_logo = logo_base64(MWEALTH_LOGO)
+    botuvera_logo_html = f'<img class="hero-logo" src="data:image/png;base64,{botuvera_logo}" />' if botuvera_logo else ""
+    mwealth_logo_html = f'<img class="mw-logo" src="data:image/png;base64,{mwealth_logo}" alt="M Wealth" />' if mwealth_logo else '<div class="mw-logo-fallback">M Wealth</div>'
+
     st.markdown(
         f"""
         <div class="hero-shell">
             <div class="hero">
                 <div class="hero-left">
-                    <div class="mw-mark">
-                        <div class="mw-box">M</div>
-                        <div class="mw-text">Wealth</div>
-                    </div>
+                    <div class="mw-mark">{mwealth_logo_html}</div>
                     <div class="hero-title">
-                        <h1>Tesouraria <span>As a Service</span></h1>
+                        <h1 class="title-line">
+                            <span class="title-main">Tesouraria</span>
+                            <span class="title-service">As a Service</span>
+                        </h1>
                         <p>{SUBTITLE}</p>
                     </div>
                 </div>
                 <div class="hero-right">
                     <div class="hero-meta">
-                        <div class="k">Data</div><div class="v">{reference_date}</div>
+                        <div class="k">Data de Atualização</div><div class="v">{reference_date}</div>
                         <div class="k">Parceiro</div><div class="v">{PARTNER}</div>
                         <div class="k">Gestor</div><div class="v">{GESTOR}</div>
                     </div>
-                    {logo_html}
+                    {botuvera_logo_html}
                 </div>
             </div>
         </div>
@@ -659,11 +436,12 @@ def render_header(reference_date: str):
         unsafe_allow_html=True,
     )
 
+
 def section(title: str):
     st.markdown(f'<div class="section-title">{html.escape(title)}</div><div class="soft-rule"></div>', unsafe_allow_html=True)
 
 
-def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_cols=None):
+def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_cols=None, wide=None):
     if df is None or df.empty:
         return '<div class="table-shell"><div class="empty-state">Sem dados para exibir.</div></div>'
 
@@ -672,44 +450,43 @@ def html_table(df: pd.DataFrame, col_labels=None, col_classes=None, allow_html_c
     labels = col_labels or {c: c for c in columns}
     classes = col_classes or {}
     allow_html_cols = set(allow_html_cols or [])
+    shell_class = "table-shell wide" if (wide if wide is not None else len(columns) >= 7) else "table-shell"
 
-    head = "".join(
-        f'<th class="{classes.get(c, "")}">{html.escape(str(labels.get(c, c)))}</th>' for c in columns
-    )
-
+    head = "".join(f'<th class="{classes.get(c, "")}">{html.escape(str(labels.get(c, c)))}</th>' for c in columns)
     rows = []
     for _, row in work.iterrows():
         tds = []
         for c in columns:
             val = row[c]
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                txt = "—"
-            else:
-                txt = str(val)
+            txt = "—" if val is None or (isinstance(val, float) and pd.isna(val)) else str(val)
             txt = txt if c in allow_html_cols else html.escape(txt)
             tds.append(f'<td class="{classes.get(c, "")}">{txt}</td>')
         rows.append("<tr>" + "".join(tds) + "</tr>")
-
-    return f'<div class="table-shell"><table class="pretty"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-
-
-def efficiency_badge(days) -> str:
-    if days is None:
-        return '<span class="badge info">sem data</span>'
-    try:
-        d = int(days)
-    except Exception:
-        return '<span class="badge info">sem data</span>'
-    if d >= IOF_ALERT_DAYS:
-        return f'<span class="badge danger">{d}d</span>'
-    if d >= IOF_WARN_DAYS:
-        return f'<span class="badge warn">{d}d</span>'
-    if d >= IOF_OK_DAYS:
-        return f'<span class="badge info">{d}d</span>'
-    return f'<span class="badge ok">{d}d</span>'
+    return f'<div class="{shell_class}"><table class="pretty"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
 
 
-# ------------------------ carga / parser ------------------------
+def status_badge(ok: bool, text_ok="OK", text_bad="Atenção"):
+    return f'<span class="badge {"ok" if ok else "danger"}">{text_ok if ok else text_bad}</span>'
+
+
+def iof_badge(rate: int):
+    cls = "ok" if rate == 0 else "warn"
+    return f'<span class="badge {cls}">{rate}%</span>'
+
+
+def kpi_card(label, value, sub="", cls=""):
+    return (
+        '<div class="kpi-card">'
+        f'<div class="kpi-label">{html.escape(str(label))}</div>'
+        f'<div class="kpi-value" title="{html.escape(str(value))}">{html.escape(str(value))}</div>'
+        f'<div class="kpi-sub {html.escape(str(cls or ""))}">{html.escape(str(sub or ""))}</div>'
+        '</div>'
+    )
+
+
+def render_kpis(items):
+    st.markdown('<div class="kpi-grid">' + ''.join(kpi_card(*item) for item in items) + '</div>', unsafe_allow_html=True)
+
 
 def load_clients():
     default = pd.DataFrame(
@@ -731,14 +508,11 @@ def load_clients():
     return default
 
 
-
 def classify_product(group_name: str, subgroup_name: str, asset_name: str):
     s = f"{group_name or ''} {subgroup_name or ''} {asset_name or ''}".lower()
-
     if "compromiss" in s:
         return "Op. Compromissadas", "D+0", "pos_fixado"
     if any(x in s for x in ["lca", "lci"]):
-        # Produto isento, mas liquidez operacional diária/D+0 no relatório.
         return "Renda Fixa Isenta", "D+0", "isento"
     if "fundo" in s or "fic" in s or "firf" in s:
         if "d+31" in s or "d31" in s:
@@ -761,20 +535,20 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
 
     if "fundo" in group_text:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
-        valor_bruto = parse_money(row.iloc[5]) if len(row) > 5 else 0.0      # Posição
-        valor_liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0    # Valor líquido
+        valor_bruto = parse_money(row.iloc[5]) if len(row) > 5 else 0.0
+        valor_liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0
     elif "compromiss" in group_text:
         asset = "OPERAÇÕES COMPROMISSADAS"
         appl = parse_date_br(row.iloc[1]) if len(row) > 1 else pd.NaT
         venc = parse_date_br(row.iloc[3]) if len(row) > 3 else pd.NaT
-        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0      # Posição
-        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0    # Valor líquido
+        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0
+        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0
     else:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
         appl = parse_date_br(row.iloc[1]) if len(row) > 1 else pd.NaT
         venc = parse_date_br(row.iloc[3]) if len(row) > 3 else pd.NaT
-        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0      # Posição
-        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0    # Valor líquido
+        valor_bruto = parse_money(row.iloc[8]) if len(row) > 8 else 0.0
+        valor_liquido = parse_money(row.iloc[9]) if len(row) > 9 else 0.0
 
     if valor_bruto <= 0 and valor_liquido <= 0:
         return None
@@ -784,8 +558,6 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
         valor_liquido = valor_bruto
 
     produto, liquidez, fator = classify_product(group_name, subgroup_name, asset)
-    ir = max(valor_bruto - valor_liquido, 0.0)
-
     days = None
     if isinstance(appl, date) and not pd.isna(appl) and isinstance(ref_date, date):
         try:
@@ -806,14 +578,14 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
         "valor": valor_bruto,
         "valor_bruto": valor_bruto,
         "valor_liquido": valor_liquido,
-        "ir": ir,
+        "ir": max(valor_bruto - valor_liquido, 0.0),
         "grupo_origem": group_name,
         "subgrupo_origem": subgroup_name,
     }
 
+
 def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
     df = pd.read_excel(file_obj, sheet_name=0, header=None, dtype=object, engine="openpyxl")
-
     header_text = " ".join([str(x) for x in df.iloc[0].dropna().tolist()])
     account_match = re.search(r"Conta:\s*(\d+)", header_text)
     account = account_match.group(1) if account_match else re.sub(r"\D+", "", filename)
@@ -837,13 +609,11 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
         first = "" if is_empty(row.iloc[0]) else str(row.iloc[0]).strip()
         values_lower = [str(x).strip().lower() for x in row.tolist() if not is_empty(x)]
 
-        # fim do arquivo / blocos de saldo projetado
         if first.startswith("Saldo Disponível"):
             capture_rows = False
             current_subgroup = None
             continue
 
-        # identificador de seções e sub-seções
         if first and "|" in first and re.match(r"^\s*\d+[\d,.]*%\|", first):
             label = first.split("|", 1)[1].strip()
             is_header_row = any(v in ["aplicação", "data cota"] for v in values_lower)
@@ -860,7 +630,6 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
             if all(is_empty(x) for x in row.tolist()):
                 capture_rows = False
                 continue
-
             pos = build_position_from_row(row, current_group, current_subgroup, account, titular, ref_date)
             if pos is not None:
                 positions.append(pos)
@@ -881,7 +650,6 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
                 "valor_bruto": saldo_disponivel,
                 "valor_liquido": saldo_disponivel,
                 "ir": 0.0,
-                "valor_aplicado": 0.0,
                 "grupo_origem": "Saldo em Conta",
                 "subgrupo_origem": "Saldo em Conta",
             }
@@ -896,7 +664,6 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
         "data_referencia": ref_date,
         "arquivo": filename,
     }
-
     return pd.DataFrame(positions), summary
 
 
@@ -909,13 +676,31 @@ def get_mtime_token():
 def load_data_from_disk(_mtime_token: float):
     clients = load_clients()
     files = sorted(DEFAULT_POSITIONS_DIR.glob("*.xlsx"))
-    all_positions = []
-    summaries = []
+    parsed = []
+
     for file in files:
         pos, summ = parse_xp_file(file, file.name, clients)
-        if not pos.empty:
-            all_positions.append(pos)
-        summaries.append(summ)
+        parsed.append((pos, summ))
+
+    if not parsed:
+        return pd.DataFrame(), pd.DataFrame()
+
+    summaries_all = pd.DataFrame([s for _, s in parsed])
+    if summaries_all.empty:
+        return pd.DataFrame(), summaries_all
+
+    summaries_all["data_referencia_dt"] = pd.to_datetime(summaries_all["data_referencia"], errors="coerce")
+    latest = summaries_all.sort_values(["conta", "data_referencia_dt"]).groupby("conta", as_index=False).tail(1)
+    keep_files = set(latest["arquivo"].tolist())
+
+    all_positions = []
+    summaries = []
+    for pos, summ in parsed:
+        if summ["arquivo"] in keep_files:
+            if not pos.empty:
+                all_positions.append(pos)
+            summaries.append(summ)
+
     positions = pd.concat(all_positions, ignore_index=True) if all_positions else pd.DataFrame()
     summary = pd.DataFrame(summaries)
     return positions, summary
@@ -935,25 +720,100 @@ def load_data_from_uploads(uploaded_files):
     return positions, summary
 
 
-# ------------------------ enriquecimento / kpis ------------------------
+def load_fund_applications():
+    path = FUND_APPLICATIONS_FILE if FUND_APPLICATIONS_FILE.exists() else FUND_APPLICATIONS_FALLBACK
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(path, dtype={"Conta": str})
+    except Exception:
+        return pd.DataFrame()
+
+    colmap = {normalize_text(c): c for c in df.columns}
+    conta_col = colmap.get("conta")
+    fundo_col = colmap.get("fundo")
+    data_col = colmap.get("data de aplicacao") or colmap.get("data aplicacao")
+    valor_col = colmap.get("valor aplicacao") or colmap.get("valor de aplicacao") or colmap.get("valor aplicado")
+
+    if not all([conta_col, fundo_col, data_col, valor_col]):
+        return pd.DataFrame()
+
+    out = df[[conta_col, fundo_col, data_col, valor_col]].copy()
+    out.columns = ["conta", "fundo", "data_aplicacao_fundo", "valor_aplicado_fundo"]
+    out["conta"] = out["conta"].astype(str).str.replace(r"\D", "", regex=True)
+    out["data_aplicacao_fundo"] = pd.to_datetime(out["data_aplicacao_fundo"], errors="coerce").dt.date
+    out["valor_aplicado_fundo"] = out["valor_aplicado_fundo"].apply(parse_money)
+    out["fundo_norm"] = out["fundo"].apply(normalize_text)
+    return out.dropna(subset=["data_aplicacao_fundo"])
 
 
-def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
+def enrich_fund_efficiency(positions: pd.DataFrame, reference_date: date) -> pd.DataFrame:
+    apps = load_fund_applications()
+    if apps.empty or positions.empty:
+        return pd.DataFrame()
+
+    funds = positions[positions["produto"].str.contains("Fundos", case=False, na=False)].copy()
+    if funds.empty:
+        return pd.DataFrame()
+
+    funds["fundo_norm"] = funds["ativo"].apply(normalize_text)
+    rows = []
+
+    for _, app in apps.iterrows():
+        same_account = funds[funds["conta"].astype(str) == str(app["conta"])]
+        if same_account.empty:
+            current = pd.Series(dtype=object)
+        else:
+            exact = same_account[same_account["fundo_norm"] == app["fundo_norm"]]
+            if exact.empty:
+                exact = same_account[
+                    same_account["fundo_norm"].apply(lambda x: app["fundo_norm"] in x or x in app["fundo_norm"])
+                ]
+            current = exact.iloc[0] if not exact.empty else pd.Series(dtype=object)
+
+        data_aplicacao = app["data_aplicacao_fundo"]
+        dias = max((reference_date - data_aplicacao).days, 0) if isinstance(data_aplicacao, date) else 0
+        iof_rate = iof_rate_by_days(dias)
+        data_zeragem = data_aplicacao + timedelta(days=30) if isinstance(data_aplicacao, date) else pd.NaT
+        dias_zerar = max((data_zeragem - reference_date).days, 0) if isinstance(data_zeragem, date) else 0
+
+        valor_bruto = float(current.get("valor_bruto", 0) or 0) if not current.empty else 0.0
+        valor_liquido = float(current.get("valor_liquido", 0) or 0) if not current.empty else 0.0
+        ir = float(current.get("ir", 0) or 0) if not current.empty else 0.0
+
+        rows.append(
+            {
+                "conta": app["conta"],
+                "fundo": app["fundo"],
+                "data_aplicacao": data_aplicacao,
+                "valor_aplicado": app["valor_aplicado_fundo"],
+                "dias_desde_aplicacao": dias,
+                "aliquota_iof": iof_rate,
+                "dias_ate_zerar": dias_zerar,
+                "data_zeragem": data_zeragem,
+                "valor_bruto_atual": valor_bruto,
+                "valor_liquido_atual": valor_liquido,
+                "ir_atual": ir,
+                "status": "IOF zerado" if iof_rate == 0 else "Aguardando zeragem",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def enrich(positions: pd.DataFrame, summary: pd.DataFrame, reference_date: date):
     if positions.empty:
         return positions, summary
 
     positions = positions.copy()
-    for col in ["valor", "valor_bruto", "valor_liquido", "ir", "valor_aplicado"]:
+    for col in ["valor", "valor_bruto", "valor_liquido", "ir"]:
         if col not in positions.columns:
             positions[col] = positions["valor"] if col in ["valor_bruto", "valor_liquido"] else 0.0
         positions[col] = pd.to_numeric(positions[col], errors="coerce").fillna(0.0)
 
-    # O relatório da XP não traz uma coluna explícita de IR.
-    # Por isso, o app força o cálculo por ativo usando: Posição/Valor Bruto - Valor Líquido.
-    # Isso evita exibir IR zerado quando o Excel só disponibiliza bruto e líquido.
-    positions["valor"] = positions["valor_bruto"]
-    positions["ir"] = (positions["valor_bruto"] - positions["valor_liquido"]).clip(lower=0).round(2)
+    positions.loc[positions["valor_bruto"] <= 0, "valor_bruto"] = positions.loc[positions["valor_bruto"] <= 0, "valor_liquido"]
     positions.loc[positions["valor_liquido"] <= 0, "valor_liquido"] = positions.loc[positions["valor_liquido"] <= 0, "valor_bruto"]
+    positions["valor"] = positions["valor_bruto"]
     positions["ir"] = (positions["valor_bruto"] - positions["valor_liquido"]).clip(lower=0).round(2)
 
     positions["aplicacao_fmt"] = positions["aplicacao"].apply(fmt_date_br)
@@ -966,28 +826,32 @@ def enrich(positions: pd.DataFrame, summary: pd.DataFrame):
     positions = positions.merge(totals_by_account, on="conta", how="left", suffixes=("", "_conta"))
     positions["participacao_conta"] = positions["valor"] / positions["patrimonio"]
     positions["participacao_total"] = positions["valor"] / positions["valor"].sum()
-    positions["participacao_fmt"] = positions["participacao_conta"].apply(pct)
-    positions["valor_fmt"] = positions["valor"].apply(brl)
-    positions["valor_bruto_fmt"] = positions["valor_bruto"].apply(brl)
-    positions["valor_liquido_fmt"] = positions["valor_liquido"].apply(brl)
-    positions["ir_fmt"] = positions["ir"].apply(brl)
-    positions["valor_liquido_fmt"] = positions["valor_liquido"].apply(brl)
-    positions["ir_fmt"] = positions["ir"].apply(brl)
 
     summary = summary.copy()
-    if summary.empty:
-        return positions, summary
+    if not summary.empty:
+        summary["patrimonio"] = summary["conta"].astype(str).map(totals_by_account.to_dict()).fillna(summary.get("patrimonio_arquivo", 0))
+        summary["patrimonio_liquido"] = summary["conta"].astype(str).map(liquid_by_account.to_dict()).fillna(summary["patrimonio"])
+        summary["ir_total"] = summary["conta"].astype(str).map(ir_by_account.to_dict()).fillna(0.0)
+        summary["participacao_total"] = summary["patrimonio"] / summary["patrimonio"].sum()
+        summary["participacao_fmt"] = summary["participacao_total"].apply(pct)
+        summary["iniciais"] = summary["titular"].apply(lambda s: "".join([p[0] for p in str(s).split()[:2]]).upper())
+        summary["posicoes"] = summary["conta"].astype(str).map(positions.groupby("conta").size().to_dict()).fillna(0).astype(int)
 
-    summary["patrimonio"] = summary["conta"].astype(str).map(totals_by_account.to_dict()).fillna(summary.get("patrimonio_arquivo", 0))
-    summary["patrimonio_liquido"] = summary["conta"].astype(str).map(liquid_by_account.to_dict()).fillna(summary["patrimonio"])
-    summary["ir_total"] = summary["conta"].astype(str).map(ir_by_account.to_dict()).fillna(0.0)
-    summary["participacao_total"] = summary["patrimonio"] / summary["patrimonio"].sum()
-    summary["participacao_fmt"] = summary["participacao_total"].apply(pct)
-    summary["patrimonio_fmt"] = summary["patrimonio"].apply(brl)
-    summary["patrimonio_liquido_fmt"] = summary["patrimonio_liquido"].apply(brl)
-    summary["ir_total_fmt"] = summary["ir_total"].apply(brl)
-    summary["iniciais"] = summary["titular"].apply(lambda s: "".join([p[0] for p in str(s).split()[:2]]).upper())
-    summary["posicoes"] = summary["conta"].astype(str).map(positions.groupby("conta").size().to_dict()).fillna(0).astype(int)
+    fund_eff = enrich_fund_efficiency(positions, reference_date)
+    if not fund_eff.empty:
+        eff_cols = fund_eff[["conta", "fundo", "data_aplicacao", "dias_desde_aplicacao", "aliquota_iof", "dias_ate_zerar", "data_zeragem"]].copy()
+        eff_cols["fundo_norm"] = eff_cols["fundo"].apply(normalize_text)
+        positions["ativo_norm"] = positions["ativo"].apply(normalize_text)
+        for _, r in eff_cols.iterrows():
+            mask = (positions["conta"].astype(str) == str(r["conta"])) & (positions["ativo_norm"].apply(lambda x: r["fundo_norm"] in x or x in r["fundo_norm"]))
+            positions.loc[mask, "aplicacao"] = r["data_aplicacao"]
+            positions.loc[mask, "aplicacao_fmt"] = fmt_date_br(r["data_aplicacao"])
+            positions.loc[mask, "dias_desde_aplicacao"] = r["dias_desde_aplicacao"]
+            positions.loc[mask, "iof_fundo"] = r["aliquota_iof"]
+            positions.loc[mask, "dias_ate_zerar_iof"] = r["dias_ate_zerar"]
+            positions.loc[mask, "data_zeragem_iof"] = r["data_zeragem"]
+        positions = positions.drop(columns=["ativo_norm"], errors="ignore")
+
     return positions, summary
 
 
@@ -1016,7 +880,12 @@ def calc_kpis(positions: pd.DataFrame, summary: pd.DataFrame):
     }
 
 
-# ------------------------ renderizações ------------------------
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Detalhamento")
+    return output.getvalue()
+
 
 def render_account_card(row, total_geral: float):
     st.markdown(
@@ -1043,32 +912,26 @@ def render_account_card(row, total_geral: float):
     )
 
 
-def render_kpi_cards(items):
-    cards = []
-    for label, value, sub, cls in items:
-        cards.append(
-            '<div class="kpi-card">'
-            f'<div class="kpi-label">{html.escape(str(label))}</div>'
-            f'<div class="kpi-value">{html.escape(str(value))}</div>'
-            f'<div class="kpi-sub {html.escape(str(cls or ""))}">{html.escape(str(sub or ""))}</div>'
-            '</div>'
-        )
-    st.markdown('<div class="kpi-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
-
-
 def render_visao_geral(positions, summary, kpis):
-    render_kpi_cards([
-        ("Patrimônio bruto", brl(kpis["total"]), "Valor de posição", ""),
-        ("Valor líquido", brl(kpis["total_liquido"]), "Após IR estimado", ""),
-        ("IR estimado", brl(kpis["ir_total"]), "Bruto - líquido", ""),
-        ("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]), "good"),
-        ("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"], "good"),
-    ])
+    render_kpis(
+        [
+            ("Patrimônio bruto", short_money(kpis["total"]), "Valor de posição", ""),
+            ("Valor líquido", short_money(kpis["total_liquido"]), "Após IR estimado", ""),
+            ("IR estimado", brl(kpis["ir_total"]), "Bruto - líquido", ""),
+            ("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]), "good"),
+            ("Maior titular", pct(kpis["maior_titular_pct"]), kpis["maior_titular_nome"], "good"),
+        ]
+    )
 
     section("Distribuição por produto")
-    left, right = st.columns([1.25, 1])
+    left, right = st.columns([1.15, 1])
 
-    prod = positions.groupby("produto", as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+    prod = positions.groupby("produto", as_index=False).agg(
+        valor=("valor", "sum"),
+        valor_liquido=("valor_liquido", "sum"),
+        ir=("ir", "sum"),
+        liquidez=("liquidez", lambda s: ", ".join(sorted(s.unique(), key=lambda x: LIQUIDITY_ORDER.index(x) if x in LIQUIDITY_ORDER else 99))),
+    ).sort_values("valor", ascending=False)
     prod["participacao"] = prod["valor"] / prod["valor"].sum()
 
     with left:
@@ -1088,80 +951,48 @@ def render_visao_geral(positions, summary, kpis):
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#E2E8F0"),
             showlegend=False,
-            annotations=[dict(text=brl(kpis["total"]), showarrow=False, font=dict(size=18, color="#FFF", family="Inter"))],
+            annotations=[dict(text=short_money(kpis["total"]), showarrow=False, font=dict(size=18, color="#FFF", family="Inter"))],
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     with right:
         disp = prod.copy()
         disp["participação"] = disp["participacao"].apply(pct)
-        disp["valor (R$)"] = disp["valor"].apply(brl)
-        disp = disp[["produto", "participação", "valor (R$)"]]
-        st.markdown(html_table(disp, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
+        disp["valor bruto"] = disp["valor"].apply(brl)
+        disp["IR"] = disp["ir"].apply(brl)
+        disp["valor líquido"] = disp["valor_liquido"].apply(brl)
+        disp = disp[["produto", "liquidez", "participação", "valor bruto", "IR", "valor líquido"]]
+        st.markdown(html_table(disp), unsafe_allow_html=True)
 
-    section("Concentração por titular")
-    titular = summary.sort_values("patrimonio", ascending=True).copy()
-    fig = go.Figure(
-        go.Bar(
-            x=titular["participacao_total"],
-            y=titular["titular"],
-            orientation="h",
-            marker=dict(color="#8DB7FF"),
-            text=titular["participacao_total"].apply(pct),
-            textposition="outside",
-        )
-    )
-    fig.update_layout(
-        height=max(315, 80 + 48 * len(titular)),
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E2E8F0"),
-        xaxis=dict(tickformat=".0%", range=[0, max(1, titular["participacao_total"].max() * 1.1)], gridcolor="rgba(148,163,184,.10)"),
-        yaxis=dict(gridcolor="rgba(148,163,184,.0)"),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    section("Detalhamento por produto")
-    prod_table = prod.copy()
-    prod_table["liquidez"] = prod_table["produto"].map(
-        positions.groupby("produto")["liquidez"].agg(lambda s: ", ".join(sorted(s.unique(), key=lambda x: LIQUIDITY_ORDER.index(x) if x in LIQUIDITY_ORDER else 99))).to_dict()
-    )
-    prod_table["participação"] = prod_table["participacao"].apply(pct)
-    prod_table["valor (R$)"] = prod_table["valor"].apply(brl)
-    prod_table = prod_table[["produto", "liquidez", "participação", "valor (R$)"]]
-    st.markdown(html_table(prod_table, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
-
-
-def render_por_titular(positions, summary, kpis):
     section("Posição por titular")
-    st.markdown(f"<div style='text-align:right;font-size:1.45rem;font-weight:900;margin:-8px 0 14px;color:#F8FAFC;'>{brl(kpis['total'])}</div>", unsafe_allow_html=True)
-
     for _, row in summary.sort_values("patrimonio", ascending=False).iterrows():
         render_account_card(row, kpis["total"])
-        detail = positions[positions["conta"].astype(str) == str(row["conta"])]
-        if detail.empty:
-            continue
 
-        with st.expander(f"Ver posições de {row['titular']}", expanded=False):
-            produto = detail.groupby("produto", as_index=False).agg(
-                valor=("valor", "sum"),
-                valor_liquido=("valor_liquido", "sum"),
-                ir=("ir", "sum"),
-            ).sort_values("valor", ascending=False)
-            produto["participação"] = produto["valor"] / produto["valor"].sum()
-            produto["participação"] = produto["participação"].apply(pct)
-            produto["bruto (R$)"] = produto["valor"].apply(brl)
-            produto["IR (R$)"] = produto["ir"].apply(brl)
-            produto["líquido (R$)"] = produto["valor_liquido"].apply(brl)
-            produto = produto[["produto", "participação", "bruto (R$)", "IR (R$)", "líquido (R$)"]]
-            st.markdown(
-                html_table(
-                    produto,
-                    col_classes={"participação": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"},
-                ),
-                unsafe_allow_html=True,
-            )
+
+def render_eficiencia_fundos(positions, reference_date: date):
+    section("Eficiência dos fundos")
+    eff = enrich_fund_efficiency(positions, reference_date)
+    if eff.empty:
+        st.markdown(
+            '<div class="panel"><div class="muted">Sem planilha de aplicações de fundos encontrada. Use <b>data/config/aplicacoes_fundos.xlsx</b> com as colunas Conta, Fundo, Data de Aplicação e Valor Aplicação.</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    view = eff.copy()
+    view["Data aplicação"] = view["data_aplicacao"].apply(fmt_date_br)
+    view["Valor aplicado"] = view["valor_aplicado"].apply(brl)
+    view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: f"{int(x)}d")
+    view["IOF atual"] = view["aliquota_iof"].apply(lambda x: iof_badge(int(x)))
+    view["Dias para zerar"] = view["dias_ate_zerar"].apply(lambda x: "zerado" if int(x) == 0 else f"{int(x)}d")
+    view["Data zeragem"] = view["data_zeragem"].apply(fmt_date_br)
+    view["Valor bruto"] = view["valor_bruto_atual"].apply(brl)
+    view["Valor líquido"] = view["valor_liquido_atual"].apply(brl)
+    view["Status"] = view["status"].apply(lambda s: status_badge(s == "IOF zerado", "IOF zerado", "Aguardando"))
+
+    out = view[["conta", "fundo", "Data aplicação", "Valor aplicado", "Dias", "IOF atual", "Dias para zerar", "Data zeragem", "Valor bruto", "Valor líquido", "Status"]].copy()
+    out.columns = ["Conta", "Fundo", "Data aplicação", "Valor aplicado", "Dias", "IOF atual", "Dias para zerar", "Data zeragem", "Valor bruto", "Valor líquido", "Status"]
+    st.markdown(html_table(out, allow_html_cols=["IOF atual", "Status"], wide=True), unsafe_allow_html=True)
 
 
 def render_detalhamento(positions, summary):
@@ -1202,6 +1033,21 @@ def render_detalhamento(positions, summary):
         unsafe_allow_html=True,
     )
 
+    export = df.copy()
+    export["Aplicação"] = export["aplicacao"].apply(fmt_date_br)
+    export["Vencimento"] = export["vencimento"].apply(fmt_date_br)
+    export["Dias desde aplicação"] = export["dias_desde_aplicacao"].apply(lambda x: "" if x is None or pd.isna(x) else int(x))
+    export = export[["titular", "conta", "ativo", "produto", "liquidez", "Aplicação", "Vencimento", "Dias desde aplicação", "valor_bruto", "ir", "valor_liquido"]].copy()
+    export.columns = ["Titular", "Conta", "Ativo", "Produto", "Liquidez", "Aplicação", "Vencimento", "Dias desde aplicação", "Valor bruto", "IR", "Valor líquido"]
+
+    st.download_button(
+        label="baixar arquivo",
+        data=to_excel_bytes(export),
+        file_name=f"tesouraria_botuvera_{str(titulo).lower().replace(' ', '_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Baixa a visão filtrada em Excel.",
+    )
+
     view = df.sort_values(["titular", "conta", "produto", "valor"], ascending=[True, True, True, False]).copy()
     view["Liquidez"] = view["liquidez"].apply(lambda x: f'<span class="liquidity-pill">{html.escape(str(x))}</span>')
     view["Dias desde aplic."] = view["dias_desde_aplicacao"].apply(lambda x: "—" if x is None or pd.isna(x) else f"{int(x)}d")
@@ -1209,36 +1055,14 @@ def render_detalhamento(positions, summary):
     view["Valor bruto"] = view["valor_bruto"].apply(brl)
     view["IR"] = view["ir"].apply(lambda x: f'<span class="tax-pill">{brl(x)}</span>' if float(x or 0) > 0 else brl(0))
     view["Valor líquido"] = view["valor_liquido"].apply(brl)
+    if "iof_fundo" in view.columns:
+        view["IOF fundo"] = view["iof_fundo"].apply(lambda x: "—" if pd.isna(x) else f"{int(x)}%")
+    else:
+        view["IOF fundo"] = "—"
 
-    table_view = view[["titular", "conta", "ativo", "produto", "Liquidez", "aplicacao_fmt", "vencimento_fmt", "Dias desde aplic.", "% carteira", "Valor bruto", "IR", "Valor líquido"]].copy()
-    table_view.columns = ["Titular", "Conta", "Ativo", "Produto", "Liquidez", "Aplicação", "Vencimento", "Dias desde aplic.", "% carteira", "Valor bruto", "IR", "Valor líquido"]
-
-    export_view = table_view.copy()
-    export_view["Liquidez"] = export_view["Liquidez"].str.replace(r"<[^>]*>", "", regex=True)
-    export_view["IR"] = export_view["IR"].str.replace(r"<[^>]*>", "", regex=True)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_view.to_excel(writer, index=False, sheet_name="Posição")
-
-    st.markdown('<div class="download-line">', unsafe_allow_html=True)
-    st.download_button(
-        "baixar arquivo",
-        data=output.getvalue(),
-        file_name=f"tesouraria_botuvera_{str(titulo).lower().replace(' ', '_')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=False,
-        help="Baixa a visão filtrada em Excel.",
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown(
-        html_table(
-            table_view,
-            col_classes={"Conta": "center", "% carteira": "num", "Valor bruto": "num", "Valor líquido": "num", "IR": "num", "Liquidez": "center", "Dias desde aplic.": "center"},
-            allow_html_cols=["Liquidez", "IR"],
-        ),
-        unsafe_allow_html=True,
-    )
+    table_view = view[["titular", "conta", "ativo", "produto", "Liquidez", "aplicacao_fmt", "vencimento_fmt", "Dias desde aplic.", "IOF fundo", "% carteira", "Valor bruto", "IR", "Valor líquido"]].copy()
+    table_view.columns = ["Titular", "Conta", "Ativo", "Produto", "Liquidez", "Aplicação", "Vencimento", "Dias desde aplic.", "IOF fundo", "% carteira", "Valor bruto", "IR", "Valor líquido"]
+    st.markdown(html_table(table_view, allow_html_cols=["Liquidez", "IR"], wide=True), unsafe_allow_html=True)
 
     section("Eficiência das compromissadas")
     comp = df[df["produto"].eq("Op. Compromissadas")].sort_values("dias_desde_aplicacao", ascending=False)
@@ -1252,7 +1076,7 @@ def render_detalhamento(positions, summary):
                     <div class="account-head">
                         <div>
                             <div class="name">{html.escape(str(r['titular']))} • Conta {html.escape(str(r['conta']))}</div>
-                            <div class="muted">Aplicação: {r['aplicacao_fmt']} • Vencimento: {r['vencimento_fmt']} {efficiency_badge(r['dias_desde_aplicacao'])}</div>
+                            <div class="muted">Aplicação: {r['aplicacao_fmt']} • Vencimento: {r['vencimento_fmt']} • {'' if pd.isna(r['dias_desde_aplicacao']) else str(int(r['dias_desde_aplicacao'])) + 'd'}</div>
                         </div>
                         <div>
                             <div class="money">{brl(r['valor_bruto'])}</div>
@@ -1263,61 +1087,6 @@ def render_detalhamento(positions, summary):
                 """,
                 unsafe_allow_html=True,
             )
-        st.caption(f"Sinalização visual: verde até {IOF_OK_DAYS} dias, azul até {IOF_WARN_DAYS - 1} dias, amarelo até {IOF_ALERT_DAYS - 1} dias e vermelho a partir de {IOF_ALERT_DAYS} dias.")
-
-def render_liquidez(positions, kpis):
-    section("Perfil de liquidez")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Liquidez D+0/D+1", pct(kpis["liquidez_d0_pct"]), brl(kpis["liquidez_d0"]))
-    c2.metric("Renda fixa isenta", pct(kpis["isenta_pct"]), brl(kpis["isenta"]))
-    c3.metric("Liquidez D+31+", pct(kpis["travado_pct"]), brl(kpis["travado"]))
-
-    liq = positions.groupby("liquidez", as_index=False)["valor"].sum()
-    liq["ord"] = liq["liquidez"].apply(lambda x: LIQUIDITY_ORDER.index(x) if x in LIQUIDITY_ORDER else 99)
-    liq = liq.sort_values("ord")
-    liq["participacao"] = liq["valor"] / liq["valor"].sum()
-
-    section("Distribuição de liquidez")
-    fig = go.Figure(
-        go.Bar(
-            x=liq["participacao"],
-            y=liq["liquidez"],
-            orientation="h",
-            marker=dict(color=["#6EE7B7", "#8DB7FF", "#CABFFD", "#F7C561", "#94A3B8"][: len(liq)]),
-            text=liq["participacao"].apply(pct),
-            textposition="inside",
-            insidetextanchor="middle",
-        )
-    )
-    fig.update_layout(
-        height=max(260, 80 + 50 * len(liq)),
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E2E8F0"),
-        xaxis=dict(tickformat=".0%", range=[0, 1], gridcolor="rgba(148,163,184,.10)"),
-        yaxis=dict(gridcolor="rgba(148,163,184,.0)"),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    col1, col2 = st.columns(2)
-    with col1:
-        section("Composição D+0/D+1")
-        d0 = positions[positions["liquidez"].isin(["D+0", "D+1"])].groupby("produto", as_index=False)["valor"].sum().sort_values("valor", ascending=False)
-        d0["participação"] = d0["valor"] / d0["valor"].sum() if not d0.empty else 0
-        d0["participação"] = d0["participação"].apply(pct)
-        d0["valor (R$)"] = d0["valor"].apply(brl)
-        d0 = d0[["produto", "participação", "valor (R$)"]]
-        st.markdown(html_table(d0, col_classes={"participação": "num", "valor (R$)": "num", "bruto (R$)": "num", "IR (R$)": "num", "líquido (R$)": "num"}), unsafe_allow_html=True)
-    with col2:
-        section("D+31 e renda fixa isenta")
-        travado = positions[(~positions["liquidez"].isin(["D+0", "D+1"])) | (positions["produto"].eq("Renda Fixa Isenta"))].groupby(["produto", "liquidez"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
-        travado["participação"] = travado["valor"] / positions["valor"].sum() if not travado.empty else 0
-        travado["participação"] = travado["participação"].apply(pct)
-        travado["valor (R$)"] = travado["valor"].apply(brl)
-        travado = travado[["produto", "liquidez", "participação", "valor (R$)"]]
-        st.markdown(html_table(travado, col_classes={"liquidez": "center", "participação": "num", "valor (R$)": "num"}), unsafe_allow_html=True)
-
 
 
 def infer_emissor(row):
@@ -1336,52 +1105,28 @@ def infer_emissor(row):
     return produto or "Não identificado"
 
 
-def status_badge(ok: bool, text_ok="OK", text_bad="Atenção"):
-    return f'<span class="badge {"ok" if ok else "danger"}">{text_ok if ok else text_bad}</span>'
-
-
 def render_politica(positions, kpis):
     section("Política de investimentos")
     pos_fixado = positions[positions["fator"].isin(["pos_fixado", "caixa", "isento"])]["valor"].sum()
     pos_fixado_pct = safe_div(pos_fixado, kpis["total"])
-    pos_ok = pos_fixado_pct >= MIN_POS_FIXADO
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pós-fixado / Caixa", pct(pos_fixado_pct), f"mín. {pct(MIN_POS_FIXADO)}")
-    c2.metric("Liquidez operacional", pct(kpis["liquidez_d0_pct"]), "D+0 / D+1")
-    c3.metric("Valor líquido", brl(kpis["total_liquido"]), f"IR {brl(kpis['ir_total'])}")
-    c4.metric("Validação CFO", brl(VALIDACAO_CFO_VALOR), "exceto compromissadas")
-
-    section("Enquadramento automático")
     non_comp_cfo = positions[(positions["produto"] != "Op. Compromissadas") & (positions["valor"] >= VALIDACAO_CFO_VALOR)].copy()
+
     checks = pd.DataFrame(
         [
-            ["Risco de mercado", "Mínimo de 80% em caixa/pós-fixado/isentos", status_badge(pos_ok), pct(pos_fixado_pct)],
+            ["Risco de mercado", "Mínimo de 80% em caixa/pós-fixado/isentos", status_badge(pos_fixado_pct >= MIN_POS_FIXADO), pct(pos_fixado_pct)],
             ["Liquidez operacional", "Disponibilidade em D+0 ou D+1", status_badge(kpis["liquidez_d0_pct"] >= 0.80), pct(kpis["liquidez_d0_pct"])],
             ["Validação CFO", "Aplicações acima de R$ 5 mi, exceto compromissadas", status_badge(non_comp_cfo.empty), f"{len(non_comp_cfo)} alerta(s)"],
             ["IR consolidado", "Diferença entre posição bruta e valor líquido", status_badge(True), brl(kpis["ir_total"])],
         ],
         columns=["controle", "regra", "status", "leitura atual"],
     )
-    st.markdown(
-        html_table(
-            checks,
-            col_labels={"controle": "Controle", "regra": "Regra", "status": "Status", "leitura atual": "Leitura atual"},
-            col_classes={"status": "center", "leitura atual": "num"},
-            allow_html_cols=["status"],
-        ),
-        unsafe_allow_html=True,
-    )
+    st.markdown(html_table(checks, col_labels={"controle": "Controle", "regra": "Regra", "status": "Status", "leitura atual": "Leitura atual"}, allow_html_cols=["status"]), unsafe_allow_html=True)
 
     section("Limite por produto / emissor")
-    limite_emissor = min(kpis["total"] * 0.50, 10_000_000)
+    limite_emissor = min(kpis["total"] * LIMITE_EMISSOR_PCT, LIMITE_EMISSOR_VALOR)
     emissor_df = positions.copy()
     emissor_df["emissor"] = emissor_df.apply(infer_emissor, axis=1)
-    emissores = emissor_df.groupby("emissor", as_index=False).agg(
-        valor=("valor", "sum"),
-        valor_liquido=("valor_liquido", "sum"),
-        ir=("ir", "sum"),
-    ).sort_values("valor", ascending=False)
+    emissores = emissor_df.groupby("emissor", as_index=False).agg(valor=("valor", "sum"), valor_liquido=("valor_liquido", "sum"), ir=("ir", "sum")).sort_values("valor", ascending=False)
     emissores["% carteira"] = emissores["valor"] / kpis["total"]
     emissores["limite"] = limite_emissor
     emissores["status"] = emissores["valor"].apply(lambda v: status_badge(v <= limite_emissor))
@@ -1391,33 +1136,50 @@ def render_politica(positions, kpis):
     emissores["IR"] = emissores["ir"].apply(brl)
     emissores["valor líquido"] = emissores["valor_liquido"].apply(brl)
     emissores = emissores[["emissor", "valor bruto", "% carteira", "limite", "IR", "valor líquido", "status"]]
-    st.markdown(
-        html_table(
-            emissores,
-            col_labels={"emissor": "Produto / Emissor", "status": "Status"},
-            col_classes={"valor bruto": "num", "% carteira": "num", "limite": "num", "IR": "num", "valor líquido": "num", "status": "center"},
-            allow_html_cols=["status"],
-        ),
-        unsafe_allow_html=True,
+    st.markdown(html_table(emissores, col_labels={"emissor": "Produto / Emissor", "status": "Status"}, allow_html_cols=["status"]), unsafe_allow_html=True)
+
+    section("Horários operacionais")
+    xp = pd.DataFrame(
+        [
+            ["Aplicação", "Emissão Bancária Primária", "10h00 às 15h00"],
+            ["Aplicação", "Emissão Bancária Secundária", "10h00 às 17h30"],
+            ["Aplicação", "Crédito Privado", "10h00 às 17h30"],
+            ["Aplicação", "Títulos Públicos", "10h00 às 17h00"],
+            ["Aplicação", "Compromissadas", "10h00 às 17h30"],
+            ["Resgate", "Emissão Bancária Primária", "10h00 às 17h00"],
+            ["Resgate", "Emissão Bancária Secundária", "10h00 às 17h00"],
+            ["Resgate", "Crédito Privado", "10h00 às 15h00"],
+            ["Resgate", "Títulos Públicos", "10h00 às 17h00"],
+            ["Resgate", "Compromissadas", "08h00 às 16h15"],
+        ],
+        columns=["Tipo", "Produto", "XP Investimentos"],
     )
+    btg = pd.DataFrame(
+        [
+            ["Aplicação", "Emissão Bancária Primária", "10h00 às 15h00"],
+            ["Aplicação", "Emissão Bancária Secundária", "10h00 às 15h00"],
+            ["Aplicação", "Crédito Privado", "10h00 às 16h00"],
+            ["Aplicação", "Títulos Públicos", "10h00 às 15h00"],
+            ["Aplicação", "Compromissadas", "10h00 às 17h00"],
+            ["Resgate", "Emissão Bancária Primária", "10h00 às 15h00"],
+            ["Resgate", "Emissão Bancária Secundária", "10h00 às 16h00"],
+            ["Resgate", "Crédito Privado", "10h00 às 16h00"],
+            ["Resgate", "Títulos Públicos", "10h00 às 15h00"],
+            ["Resgate", "Compromissadas", "08h00 às 17h00"],
+        ],
+        columns=["Tipo", "Produto", "BTG Pactual"],
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(html_table(xp, wide=False), unsafe_allow_html=True)
+    with col2:
+        st.markdown(html_table(btg, wide=False), unsafe_allow_html=True)
+    st.markdown('<div class="muted" style="margin-top:12px;">Aplicações feitas fora da janela de funcionamento ficam agendadas para o dia útil seguinte, sujeitas à disponibilidade do ativo nas mesmas condições. Horários de Brasília.</div>', unsafe_allow_html=True)
 
-    if not non_comp_cfo.empty:
-        section("Alertas CFO")
-        alert = non_comp_cfo[["titular", "conta", "ativo", "produto", "valor_fmt"]].copy()
-        alert.columns = ["Titular", "Conta", "Ativo", "Produto", "Valor bruto"]
-        st.markdown(html_table(alert, col_classes={"Valor bruto": "num", "Conta": "center"}), unsafe_allow_html=True)
-
-
-# ------------------------ main ------------------------
 
 def main():
     page_icon = Image.open(BOTUVERA_LOGO) if BOTUVERA_LOGO.exists() else "📊"
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon=page_icon,
-        layout="wide",
-        initial_sidebar_state="collapsed",
-    )
+    st.set_page_config(page_title=APP_TITLE, page_icon=page_icon, layout="wide", initial_sidebar_state="collapsed")
     inject_css()
 
     with st.sidebar:
@@ -1428,7 +1190,7 @@ def main():
         st.markdown("### Regras atuais")
         st.write(f"• Mínimo pós-fixado: **{pct(MIN_POS_FIXADO)}**")
         st.write(f"• Validação CFO acima de: **{brl(VALIDACAO_CFO_VALOR)}**")
-        st.write(f"• Alerta compromissada: **{IOF_ALERT_DAYS} dias**")
+        st.write("• IOF de fundos: zeragem no 30º dia")
 
     if uploaded:
         positions, summary = load_data_from_uploads(uploaded)
@@ -1440,23 +1202,24 @@ def main():
         st.error("Nenhuma posição encontrada. Inclua arquivos `.xlsx` em `data/positions/` ou use o upload manual na lateral.")
         return
 
-    positions, summary = enrich(positions, summary)
+    ref_dates = pd.to_datetime(summary["data_referencia"], errors="coerce").dropna()
+    reference_date = ref_dates.max().date() if not ref_dates.empty else date.today()
+
+    positions, summary = enrich(positions, summary, reference_date)
     kpis = calc_kpis(positions, summary)
 
-    ref_dates = summary["data_referencia"].dropna().tolist()
-    ref_date = fmt_date_br(ref_dates[0]) if ref_dates else fmt_date_br(date.today())
-    render_header(ref_date)
+    render_header(fmt_date_br(reference_date))
 
-    tabs = st.tabs(["Visão Geral", "Por Titular", "Detalhamento das Contas", "Liquidez", "Política de Investimentos"])
+    tabs = st.tabs(["Visão Geral", "Detalhamento das Contas", "Política de Investimentos"])
+
     with tabs[0]:
         render_visao_geral(positions, summary, kpis)
+        render_eficiencia_fundos(positions, reference_date)
+
     with tabs[1]:
-        render_por_titular(positions, summary, kpis)
-    with tabs[2]:
         render_detalhamento(positions, summary)
-    with tabs[3]:
-        render_liquidez(positions, kpis)
-    with tabs[4]:
+
+    with tabs[2]:
         render_politica(positions, kpis)
 
     st.markdown(f'<div class="footer">{GESTOR} • Tesouraria Grupo Botuverá • Informações confidenciais</div>', unsafe_allow_html=True)
