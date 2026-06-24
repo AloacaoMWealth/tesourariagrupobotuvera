@@ -1399,6 +1399,8 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 
 def render_account_card(row, total_geral: float):
+    participacao = pct(safe_div(row["patrimonio"], total_geral))
+
     st.markdown(
         f"""
         <div class="account-card">
@@ -1410,9 +1412,9 @@ def render_account_card(row, total_geral: float):
                         <div class="muted">Conta {html.escape(str(row['conta']))} • {int(row['posicoes'])} posição(ões)</div>
                     </div>
                 </div>
-                <div>
+                <div style="min-width:170px;">
                     <div class="money">{brl(row['patrimonio'])}</div>
-                    <div class="submoney">{pct(safe_div(row['patrimonio'], total_geral))}</div>
+                    <div class="submoney">{participacao} do total</div>
                 </div>
             </div>
             <div class="bar-bg">
@@ -1437,7 +1439,7 @@ def render_visao_geral(positions, summary, kpis):
 
     section("Distribuição por produto")
 
-    left, right = st.columns([0.82, 1.18])
+    left, right = st.columns([0.78, 1.22], vertical_alignment="top")
 
     prod = positions.groupby("produto", as_index=False).agg(
         valor=("valor", "sum"),
@@ -1468,8 +1470,8 @@ def render_visao_geral(positions, summary, kpis):
         )
 
         fig.update_layout(
-            height=285,
-            margin=dict(l=5, r=5, t=5, b=5),
+            height=255,
+            margin=dict(l=0, r=0, t=0, b=0),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#E2E8F0"),
@@ -1478,7 +1480,7 @@ def render_visao_geral(positions, summary, kpis):
                 dict(
                     text=short_money(kpis["total"]),
                     showarrow=False,
-                    font=dict(size=17, color="#FFF", family="Inter"),
+                    font=dict(size=16, color="#FFF", family="Inter"),
                 )
             ],
         )
@@ -1494,7 +1496,14 @@ def render_visao_geral(positions, summary, kpis):
         disp = disp[["produto", "liquidez", "Part.", "Bruto", "IR", "Líquido"]]
         disp.columns = ["Produto", "Liq.", "Part.", "Bruto", "IR", "Líquido"]
 
+        st.markdown(
+            """
+            <div style="padding-top:0px;">
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown(html_table(disp, wide=False), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     section("Posição por titular")
 
