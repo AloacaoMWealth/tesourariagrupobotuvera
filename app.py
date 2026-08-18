@@ -6,31 +6,41 @@ from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+try:
+    import tomllib
+except Exception:
+    tomllib = None
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
-APP_TITLE = "Tesouraria Grupo Botuverá"
+APP_TITLE = "Tesouraria Sementes Tropical"
 SUBTITLE = "Gestão Profissional do Caixa Empresarial"
-PARTNER = "Grupo Botuverá"
+PARTNER = "Sementes Tropical"
 GESTOR = "M Wealth"
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_POSITIONS_DIR = BASE_DIR / "data" / "positions"
-CLIENT_CONFIG = BASE_DIR / "data" / "config" / "clientes.csv"
-BOTUVERA_LOGO = BASE_DIR / "data" / "assets" / "botuvera_logo.png"
+CONFIG_DIR = BASE_DIR / "data" / "config"
+CLIENT_CONFIG = CONFIG_DIR / "clientes.csv"
+CLIENT_PROFILE = CONFIG_DIR / "cliente.toml"
+CLIENT_LOGO = BASE_DIR / "data" / "assets" / "Logo-sementestropical.png"
+BOTUVERA_LOGO = CLIENT_LOGO  # compatibilidade com o restante do app
 MWEALTH_LOGO = BASE_DIR / "mwealth-light.png"
-FUND_APPLICATIONS_FILE = BASE_DIR / "data" / "config" / "aplicacoes_fundos.xlsx"
+FUND_APPLICATIONS_FILE = CONFIG_DIR / "aplicacoes_fundos.xlsx"
 FUND_APPLICATIONS_FALLBACK = BASE_DIR / "Aplicações Fundos de Investimentos Botuverá.xlsx"
+FUND_MAPPING_FILE = CONFIG_DIR / "fundos_mapeamento.xlsx"
+POLICY_FILE = CONFIG_DIR / "politica_investimentos.xlsx"
 
 MIN_POS_FIXADO = 0.80
 VALIDACAO_CFO_VALOR = 5_000_000
 LIMITE_EMISSOR_VALOR = 10_000_000
 LIMITE_EMISSOR_PCT = 0.50
 
-LIQUIDITY_ORDER = ["D+0", "D+1", "D+31", "N/A"]
+LIQUIDITY_ORDER = ["D+0", "D+1", "D+2", "D+3", "D+4", "D+5", "D+30", "D+31", "D+60", "D+90", "D+120", "D+180", "D+181", "N/A"]
 
 # IOF regressivo para fundos: dias corridos.
 # Dia 1 começa em 96%; no 30º dia a alíquota zera.
@@ -66,6 +76,52 @@ IOF_TABLE = {
     29: 3,
     30: 0,
 }
+
+
+def parse_bool(value, default=False):
+    s = normalize_text(value)
+    if s in ["sim", "s", "true", "1", "yes"]:
+        return True
+    if s in ["nao", "não", "n", "false", "0", "no"]:
+        return False
+    return default
+
+
+def load_client_profile():
+    """Carrega dados do cliente sem precisar mexer no código.
+
+    Arquivo opcional: data/config/cliente.toml
+    Exemplo:
+    [cliente]
+    app_title = "Tesouraria Sementes Tropical"
+    partner = "Sementes Tropical"
+    gestor = "M Wealth"
+    subtitle = "Gestão Profissional do Caixa Empresarial"
+    logo = "data/assets/Logo-sementestropical.png"
+    """
+    global APP_TITLE, SUBTITLE, PARTNER, GESTOR, CLIENT_LOGO, BOTUVERA_LOGO
+    if not CLIENT_PROFILE.exists() or tomllib is None:
+        return
+    try:
+        data = tomllib.loads(CLIENT_PROFILE.read_text(encoding="utf-8"))
+        cliente = data.get("cliente", {})
+        APP_TITLE = cliente.get("app_title", APP_TITLE)
+        SUBTITLE = cliente.get("subtitle", SUBTITLE)
+        PARTNER = cliente.get("partner", PARTNER)
+        GESTOR = cliente.get("gestor", GESTOR)
+        logo_value = cliente.get("logo")
+        if logo_value:
+            logo_path = Path(str(logo_value))
+            if not logo_path.is_absolute():
+                logo_path = BASE_DIR / logo_path
+            CLIENT_LOGO = logo_path
+            BOTUVERA_LOGO = CLIENT_LOGO
+    except Exception:
+        pass
+
+
+load_client_profile()
+
 
 
 def brl(v: float) -> str:
@@ -116,6 +172,12 @@ def normalize_text(s) -> str:
     s = s.replace("ó", "o").replace("ô", "o").replace("õ", "o")
     s = s.replace("ú", "u").replace("ç", "c")
     return s
+
+
+def slugify(s) -> str:
+    s = normalize_text(s)
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    return s or "arquivo"
 
 
 def parse_money(x) -> float:
@@ -259,6 +321,119 @@ def fund_match_score(a: str, b: str) -> float:
     return max(token_score, seq_score)
 
 
+
+
+def liquidity_to_days(liquidity) -> int:
+    """Converte D+0, D+31, D+180, acima de D+180 etc. em número para ordenação."""
+    s = normalize_text(liquidity).replace(" ", "")
+    if not s or s in ["n/a", "na", "nan", "none", "-"]:
+        return 99999
+    if "acimaded+180" in s or "acimad+180" in s:
+        return 181
+    nums = re.findall(r"d\+?(\d+)", s)
+    if nums:
+        try:
+            return int(nums[-1])
+        except Exception:
+            return 99999
+    nums = re.findall(r"(\d+)", s)
+    if nums:
+        try:
+            return int(nums[-1])
+        except Exception:
+            return 99999
+    return 99999
+
+
+def canonical_liquidity(liquidity) -> str:
+    d = liquidity_to_days(liquidity)
+    if d == 99999:
+        return "N/A"
+    return f"D+{d}"
+
+
+def fund_product_from_liquidity(liquidity) -> str:
+    liq = canonical_liquidity(liquidity)
+    return f"Fundos {liq}" if liq != "N/A" else "Fundos"
+
+
+def days_until_date(target_date, reference_date: date):
+    """Dias corridos entre a data de atualização e o vencimento.
+    Usado para ordenar a renda fixa pelo que vence primeiro.
+    """
+    d = parse_date_br(target_date)
+    if d is None:
+        return np.nan
+    try:
+        if pd.isna(d):
+            return np.nan
+    except Exception:
+        pass
+    if not isinstance(d, date) or not isinstance(reference_date, date):
+        return np.nan
+    return (d - reference_date).days
+
+
+def load_fund_mapping():
+    """Lê data/config/fundos_mapeamento.xlsx.
+
+    Colunas mínimas: Fundo, Liquidez.
+    Coluna opcional: Alias. O Alias ajuda quando a XP abrevia ou muda o nome do fundo.
+    """
+    if not FUND_MAPPING_FILE.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(FUND_MAPPING_FILE, dtype=str)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
+    colmap = {normalize_text(c): c for c in df.columns}
+    fundo_col = colmap.get("fundo")
+    alias_col = colmap.get("alias")
+    liquidez_col = colmap.get("liquidez") or colmap.get("prazo") or colmap.get("prazo de resgate")
+    if not fundo_col or not liquidez_col:
+        return pd.DataFrame()
+    out = df[[fundo_col, liquidez_col] + ([alias_col] if alias_col else [])].copy()
+    out = out.rename(columns={fundo_col: "fundo", liquidez_col: "liquidez"})
+    if alias_col:
+        out = out.rename(columns={alias_col: "alias"})
+    else:
+        out["alias"] = ""
+    out["fundo"] = out["fundo"].astype(str).str.strip()
+    out["alias"] = out["alias"].fillna("").astype(str).str.strip()
+    out["liquidez"] = out["liquidez"].fillna("N/A").astype(str).str.strip()
+    out["fundo_norm"] = out["fundo"].apply(normalize_text)
+    out["alias_norm"] = out["alias"].apply(normalize_text)
+    out["liq_dias"] = out["liquidez"].apply(liquidity_to_days)
+    return out
+
+
+def map_fund_liquidity(asset_name: str, group_text: str = "") -> str:
+    mapping = load_fund_mapping()
+    target = normalize_text(asset_name)
+    base = normalize_text(f"{group_text} {asset_name}")
+
+    if not mapping.empty:
+        best_score = 0.0
+        best_liq = None
+        for _, row in mapping.iterrows():
+            candidates = [row.get("fundo_norm", ""), row.get("alias_norm", "")]
+            row_score = max(fund_match_score(target, c) for c in candidates if c)
+            row_score = max(row_score, max((fund_match_score(base, c) for c in candidates if c), default=0.0))
+            if row_score > best_score:
+                best_score = row_score
+                best_liq = row.get("liquidez")
+        if best_liq and best_score >= 0.48:
+            return canonical_liquidity(best_liq)
+
+    # fallback: tenta usar prazo explícito no bloco/nome. Se não achar, assume D+0.
+    explicit = re.findall(r"d\s*\+\s*(\d+)", f"{group_text} {asset_name}", flags=re.I)
+    if explicit:
+        return f"D+{int(explicit[-1])}"
+    return "D+0"
+
+
 def fmt_date_br(x) -> str:
     if x is None:
         return "—"
@@ -286,6 +461,27 @@ def logo_base64(path: Path) -> str:
     if not path.exists():
         return ""
     return base64.b64encode(path.read_bytes()).decode("utf-8")
+
+
+def get_page_icon():
+    """Retorna um favicon robusto para a guia do navegador.
+
+    Usa a logo definida em cliente.toml quando existir; redimensiona para
+    64x64 para evitar falha de favicon com imagens grandes ou largas.
+    """
+    for path in [CLIENT_LOGO, BOTUVERA_LOGO]:
+        try:
+            if path and Path(path).exists():
+                img = Image.open(path).convert("RGBA")
+                img.thumbnail((64, 64), Image.LANCZOS)
+                canvas = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                x = (64 - img.width) // 2
+                y = (64 - img.height) // 2
+                canvas.paste(img, (x, y), img)
+                return canvas
+        except Exception:
+            continue
+    return "📊"
 
 
 def iof_rate_by_days(days: int) -> int:
@@ -350,14 +546,20 @@ def inject_css():
         [data-testid="stToolbar"],
         [data-testid="stDecoration"] {
             background: transparent !important;
+            visibility: visible !important;
+        }
+
+        section[data-testid="stSidebar"],
+        [data-testid="collapsedControl"] {
+            display: none !important;
         }
 
         .block-container {
-            max-width: 1320px !important;
+            max-width: 1540px !important;
             margin: 0 auto;
-            padding-top: 1.15rem;
-            padding-left: 1.1rem;
-            padding-right: 1.1rem;
+            padding-top: 1.0rem;
+            padding-left: 1.0rem;
+            padding-right: 1.0rem;
             padding-bottom: 3rem;
         }
 
@@ -717,7 +919,14 @@ def inject_css():
         }
 
         .table-shell.wide table.pretty {
-            min-width:100%;
+            min-width:1450px;
+            table-layout:auto;
+        }
+
+        .table-shell.wide th,
+        .table-shell.wide td {
+            white-space:normal;
+            word-break:normal;
         }
 
         table.pretty thead {
@@ -726,25 +935,25 @@ def inject_css():
 
         table.pretty th {
             color:#9EC5FF !important;
-            font-size:.62rem;
-            letter-spacing:.06em;
+            font-size:.60rem;
+            letter-spacing:.055em;
             text-transform:uppercase;
-            padding:8px 9px;
+            padding:7px 8px;
             text-align:left;
             border-bottom:1px solid rgba(148,163,184,.14);
             white-space:normal;
-            line-height:1.25;
+            line-height:1.22;
         }
 
         table.pretty td {
             color:#F8FAFC !important;
-            padding:8px 9px;
+            padding:7px 8px;
             border-bottom:1px solid rgba(148,163,184,.08);
             vertical-align:middle;
             font-weight:650;
-            line-height:1.32;
+            line-height:1.28;
             text-align:left;
-            font-size:.78rem;
+            font-size:.76rem;
             white-space:normal;
             word-break:normal;
         }
@@ -860,6 +1069,25 @@ def inject_css():
             font-size:.78rem;
             margin-top:34px;
         }
+
+        div[data-testid="stExpander"] {
+            background:rgba(15,23,42,.50) !important;
+            border:1px solid rgba(148,163,184,.10) !important;
+            border-radius:18px !important;
+            overflow:hidden !important;
+            margin-bottom:12px !important;
+        }
+
+        div[data-testid="stExpander"] details {
+            border:none !important;
+        }
+
+        div[data-testid="stExpander"] summary {
+            color:#A9C7FF !important;
+            font-weight:850 !important;
+            letter-spacing:.02em !important;
+        }
+
 
         @media (max-width:1180px) {
             .kpi-grid {
@@ -1029,28 +1257,120 @@ def load_clients():
     return default
 
 
+def is_variable_income_block(text: str) -> bool:
+    """Identifica blocos da XP de renda variável/FIIs.
+
+    Evita falsos positivos como "Inflação" -> "inflacao".
+    """
+    s = normalize_text(text)
+
+    direct_terms = [
+        "fundos imobiliarios",
+        "fundo imobiliario",
+        "renda variavel",
+        "bdr",
+        "etf",
+    ]
+    if any(term in s for term in direct_terms):
+        return True
+
+    # Apenas como palavra/bloco, para não confundir com inflação.
+    if re.search(r"\bacoes\b|\bacao\b", s):
+        return True
+
+    return False
+
+def is_variable_income_header_row(values_lower: list[str]) -> bool:
+    joined = " ".join(normalize_text(v) for v in values_lower)
+    has_asset = "ativo" in joined
+    has_position = "posicao" in joined
+    has_quantity = "qtd" in joined or "quantidade" in joined
+    has_price = "preco medio" in joined or "ultima cotacao" in joined or "cotacao" in joined
+    return has_asset and has_position and (has_quantity or has_price)
+
+
+def classify_variable_income(group_name: str, asset_name: str):
+    s = normalize_text(f"{group_name or ''} {asset_name or ''}")
+
+    if "fundo imobiliario" in s or "fundos imobiliarios" in s or re.search(r"\b[a-z]{4}11\b", s):
+        return "Fundos Imobiliários", "D+2", "risco"
+
+    if "bdr" in s:
+        return "BDRs", "D+2", "risco"
+
+    if "etf" in s:
+        return "ETFs", "D+2", "risco"
+
+    return "Renda Variável", "D+2", "risco"
+
+
+def build_variable_income_position_from_row(row, group_name: str, subgroup_name: str, account: str, titular: str):
+    asset = str(row.iloc[0]).strip() if len(row) > 0 and not is_empty(row.iloc[0]) else ""
+
+    if not asset or normalize_text(asset) in ["ativo", "total", "subtotal"]:
+        return None
+
+    values = []
+    for item in list(row.iloc[1:]):
+        v = parse_money(item)
+        if v > 0:
+            values.append(v)
+
+    # No layout de RV/FII da XP, o maior valor financeiro da linha costuma ser a coluna Posição.
+    # Isso evita depender da posição exata da coluna, que pode mudar entre relatórios.
+    financial_values = [v for v in values if v >= 100]
+    if not financial_values:
+        return None
+
+    valor_bruto = max(financial_values)
+    produto, liquidez, fator = classify_variable_income(group_name, asset)
+
+    return {
+        "conta": str(account),
+        "titular": titular,
+        "ativo": asset.upper(),
+        "produto": produto,
+        "liquidez": liquidez,
+        "fator": fator,
+        "aplicacao": pd.NaT,
+        "vencimento": pd.NaT,
+        "dias_desde_aplicacao": None,
+        "valor": valor_bruto,
+        "valor_bruto": valor_bruto,
+        "valor_liquido": valor_bruto,
+        "ir": 0.0,
+        "grupo_origem": group_name,
+        "subgrupo_origem": subgroup_name,
+    }
+
+
 def classify_product(group_name: str, subgroup_name: str, asset_name: str):
     s = f"{group_name or ''} {subgroup_name or ''} {asset_name or ''}".lower()
+
+    if is_variable_income_block(s):
+        return classify_variable_income(group_name, asset_name)
 
     if "compromiss" in s:
         return "Op. Compromissadas", "D+0", "pos_fixado"
 
-    if any(x in s for x in ["lca", "lci"]):
-        return "Renda Fixa Isenta", "D+0", "isento"
-
-    if "fundo" in s or "fic" in s or "firf" in s:
-        if "d+31" in s or "d31" in s:
-            return "Fundos D+31", "D+31", "pos_fixado"
-        return "Fundos D+0", "D+0", "pos_fixado"
-
-    if any(x in s for x in ["cdb", "tesouro", "letra financeira"]):
-        return "Renda Fixa Pós-Fixada", "D+31", "pos_fixado"
-
     if "saldo" in s:
         return "Saldo em Conta", "D+0", "caixa"
 
-    return "Outros", "N/A", "outros"
+    if "fundo" in s or "fic" in s or "firf" in s or "fidc" in s:
+        liq = map_fund_liquidity(asset_name, f"{group_name or ''} {subgroup_name or ''}")
+        return fund_product_from_liquidity(liq), liq, "pos_fixado"
 
+    if any(x in s for x in ["lca", "lci"]):
+        # Renda fixa isenta não é D+0 por definição.
+        # No detalhamento, o prazo correto vem do vencimento do papel.
+        return "Renda Fixa Isenta", "Vencimento", "isento"
+
+    if any(x in s for x in ["cdb", "tesouro", "letra financeira", "debenture", "debênture", "cra", "cri", "lf ", " lc "]):
+        # Não travar renda fixa em D+31.
+        # A liquidez operacional é o próprio vencimento do título.
+        return "Renda Fixa", "Vencimento", "pos_fixado"
+
+    return "Outros", "N/A", "outros"
 
 def build_position_from_row(row, group_name: str, subgroup_name: str, account: str, titular: str, ref_date: date):
     group_text = f"{group_name or ''} {subgroup_name or ''}".lower()
@@ -1060,6 +1380,9 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
     venc = pd.NaT
     valor_bruto = 0.0
     valor_liquido = 0.0
+
+    if is_variable_income_block(group_text):
+        return build_variable_income_position_from_row(row, group_name, subgroup_name, account, titular)
 
     if "fundo" in group_text:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
@@ -1113,11 +1436,9 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
 
     produto, liquidez, fator = classify_product(group_name, subgroup_name, asset)
 
-    if "fundo" in group_text or "cotiza" in group_text or "cotiz" in group_text:
-        if "d+31" in group_text or "d31" in group_text:
-            produto, liquidez, fator = "Fundos D+31", "D+31", "pos_fixado"
-        else:
-            produto, liquidez, fator = "Fundos D+0", "D+0", "pos_fixado"
+    if (not is_variable_income_block(group_text)) and ("fundo" in group_text or "cotiza" in group_text or "cotiz" in group_text or "fidc" in group_text):
+        liquidez = map_fund_liquidity(asset, group_text)
+        produto, liquidez, fator = fund_product_from_liquidity(liquidez), liquidez, "pos_fixado"
 
     days = None
     if isinstance(appl, date) and not pd.isna(appl) and isinstance(ref_date, date):
@@ -1188,6 +1509,13 @@ def parse_xp_file(file_obj, filename: str, clients: pd.DataFrame):
                 current_subgroup = None
                 capture_rows = False
 
+            continue
+
+        # Blocos de renda variável/FIIs aparecem com outro cabeçalho:
+        # Ativo | Qtd. Disponível | ... | Última Cotação | Posição
+        if current_group and is_variable_income_block(current_group) and is_variable_income_header_row(values_lower):
+            current_subgroup = current_group
+            capture_rows = True
             continue
 
         if capture_rows:
@@ -1359,20 +1687,23 @@ def load_fund_applications():
 
 
 def prepare_fund_positions_for_matching(positions: pd.DataFrame) -> pd.DataFrame:
-    funds = positions[positions["produto"].str.contains("Fundos", case=False, na=False)].copy()
+    fund_mask = positions["produto"].str.contains("Fundos", case=False, na=False) & ~positions["produto"].str.contains("Imobili", case=False, na=False)
+    funds = positions[fund_mask].copy()
 
     if funds.empty:
         return pd.DataFrame()
 
     funds["fundo_norm"] = funds["ativo"].apply(normalize_text)
+    funds["liquidez_mapeada"] = funds.apply(lambda r: map_fund_liquidity(r.get("ativo", ""), f"{r.get('grupo_origem', '')} {r.get('subgrupo_origem', '')}"), axis=1)
+    funds["produto_mapeado"] = funds["liquidez_mapeada"].apply(fund_product_from_liquidity)
 
     # Soma posição normal + eventuais valores em cotização/resgate em trânsito
     # para chegar na posição total atual do fundo/produto.
     grouped = funds.groupby(["conta", "fundo_norm"], as_index=False).agg(
         ativo=("ativo", "first"),
         titular=("titular", "first"),
-        produto=("produto", "first"),
-        liquidez=("liquidez", "first"),
+        produto=("produto_mapeado", "first"),
+        liquidez=("liquidez_mapeada", "first"),
         valor_bruto=("valor_bruto", "sum"),
         valor_liquido=("valor_liquido", "sum"),
         ir=("ir", "sum"),
@@ -1486,6 +1817,8 @@ def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
                             "data_aplicacao": mov["data_movimento"],
                             "valor_aplicado_original": valor,
                             "saldo_lote": valor,
+                            "liquidez": current.get("liquidez", "N/A"),
+                            "produto": current.get("produto", "Fundos"),
                             "fonte_lote": "movimentacao",
                         }
                     )
@@ -1503,6 +1836,8 @@ def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
                         "data_aplicacao": data_base,
                         "valor_aplicado_original": 0.0,
                         "saldo_lote": valor_bruto_atual,
+                        "liquidez": current.get("liquidez", "N/A"),
+                        "produto": current.get("produto", "Fundos"),
                         "fonte_lote": "residual_posicao_xp",
                     }
                 )
@@ -1516,6 +1851,8 @@ def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
                     "data_aplicacao": pd.NaT,
                     "valor_aplicado_original": 0.0,
                     "saldo_lote": valor_bruto_atual,
+                    "liquidez": current.get("liquidez", "N/A"),
+                    "produto": current.get("produto", "Fundos"),
                     "fonte_lote": "sem_movimentacao",
                 }
             )
@@ -1580,6 +1917,8 @@ def enrich_fund_efficiency(positions: pd.DataFrame, reference_date: date) -> pd.
                 "aliquota_iof": iof_rate,
                 "dias_ate_zerar": dias_zerar,
                 "data_zeragem": data_zeragem,
+                "liquidez": lote.get("liquidez", "N/A"),
+                "produto": lote.get("produto", "Fundos"),
                 "valor_bruto_atual": float(lote["valor_bruto_atual"] or 0),
                 "valor_liquido_atual": float(lote["valor_liquido_atual"] or 0),
                 "ir_atual": float(lote["ir_atual"] or 0),
@@ -1612,8 +1951,15 @@ def enrich(positions: pd.DataFrame, summary: pd.DataFrame, reference_date: date)
     positions["valor"] = positions["valor_bruto"]
     positions["ir"] = (positions["valor_bruto"] - positions["valor_liquido"]).clip(lower=0).round(2)
 
+    fund_mask = positions["produto"].astype(str).str.contains("Fundos", case=False, na=False) & ~positions["produto"].astype(str).str.contains("Imobili", case=False, na=False)
+    if fund_mask.any():
+        mapped_liq = positions.loc[fund_mask].apply(lambda r: map_fund_liquidity(r.get("ativo", ""), f"{r.get('grupo_origem', '')} {r.get('subgrupo_origem', '')}"), axis=1)
+        positions.loc[fund_mask, "liquidez"] = mapped_liq.values
+        positions.loc[fund_mask, "produto"] = mapped_liq.apply(fund_product_from_liquidity).values
+
     positions["aplicacao_fmt"] = positions["aplicacao"].apply(fmt_date_br)
     positions["vencimento_fmt"] = positions["vencimento"].apply(fmt_date_br)
+    positions["dias_ate_vencimento"] = positions["vencimento"].apply(lambda x: days_until_date(x, reference_date))
 
     totals_by_account = positions.groupby("conta")["valor"].sum().rename("patrimonio")
     liquid_by_account = positions.groupby("conta")["valor_liquido"].sum().rename("patrimonio_liquido")
@@ -1739,6 +2085,15 @@ def render_account_card(row, total_geral: float):
 
 
 
+def sort_product_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    work = df.copy()
+    work["_produto_ordem"] = work["produto"].apply(product_sort_key) if "produto" in work.columns else 9
+    work["_liquidez_ordem"] = work["liquidez"].apply(liquidity_to_days) if "liquidez" in work.columns else 99999
+    return work.sort_values(["_produto_ordem", "_liquidez_ordem", "produto"], ascending=[True, True, True]).drop(columns=["_produto_ordem", "_liquidez_ordem"], errors="ignore")
+
+
 def render_account_strategy_expander(row, positions):
     conta = str(row["conta"])
     titular = str(row["titular"])
@@ -1761,7 +2116,8 @@ def render_account_strategy_expander(row, positions):
                 )
             ),
         ),
-    ).sort_values("valor", ascending=False)
+    )
+    produto = sort_product_summary(produto)
 
     produto["participacao"] = produto["valor"] / produto["valor"].sum()
 
@@ -1803,7 +2159,8 @@ def render_visao_geral(positions, summary, kpis):
                 )
             ),
         ),
-    ).sort_values("valor", ascending=False)
+    )
+    prod = sort_product_summary(prod)
 
     prod["participacao"] = prod["valor"] / prod["valor"].sum()
 
@@ -1866,7 +2223,14 @@ def render_eficiencia_fundos(positions, reference_date: date):
         )
         return
 
-    view = eff.copy().sort_values(["conta", "fundo", "data_aplicacao"])
+    view = eff.copy()
+    view["_liq_ordem"] = view["liquidez"].apply(liquidity_to_days) if "liquidez" in view.columns else 99999
+    view["_data_ordem"] = pd.to_datetime(view["data_aplicacao"], errors="coerce").fillna(pd.Timestamp("2262-04-11"))
+    view = view.sort_values(["conta", "_liq_ordem", "_data_ordem", "fundo"])
+    view["Liq."] = view.apply(
+        lambda r: f'<span class="liquidity-pill">{html.escape("Venc." if str(r.get("liquidez", "")) == "Vencimento" else str(r.get("liquidez", "")))}</span>',
+        axis=1,
+    ) if "liquidez" in view.columns else "—"
     view["Aplicação"] = view["data_aplicacao"].apply(fmt_date_br)
     view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: "—" if pd.isna(x) else f"{int(x)}d")
     view["IOF"] = view["aliquota_iof"].apply(lambda x: "—" if pd.isna(x) else iof_badge(int(x)))
@@ -1881,6 +2245,7 @@ def render_eficiencia_fundos(positions, reference_date: date):
         [
             "conta",
             "fundo",
+            "Liq.",
             "Aplicação",
             "Dias",
             "IOF",
@@ -1896,6 +2261,7 @@ def render_eficiencia_fundos(positions, reference_date: date):
     out.columns = [
         "Conta",
         "Fundo",
+        "Liq.",
         "Aplicação",
         "Dias",
         "IOF",
@@ -1908,7 +2274,7 @@ def render_eficiencia_fundos(positions, reference_date: date):
     ]
 
     st.markdown(
-        html_table(out, allow_html_cols=["IOF", "Status"], wide=False),
+        html_table(out, allow_html_cols=["Liq.", "IOF", "Status"], wide=True),
         unsafe_allow_html=True,
     )
 
@@ -1916,10 +2282,9 @@ def render_eficiencia_fundos(positions, reference_date: date):
 def render_eficiencia_compromissadas(df):
     section("Eficiência das compromissadas")
 
-    comp = df[df["produto"].eq("Op. Compromissadas")].sort_values(
-        "dias_desde_aplicacao",
-        ascending=False,
-    )
+    comp = df[df["produto"].eq("Op. Compromissadas")].copy()
+    comp["_venc_ordem"] = pd.to_datetime(comp["vencimento"], errors="coerce").fillna(pd.Timestamp("2262-04-11"))
+    comp = comp.sort_values(["_venc_ordem", "conta", "valor_bruto"], ascending=[True, True, False])
 
     if comp.empty:
         st.markdown(
@@ -1947,6 +2312,46 @@ def render_eficiencia_compromissadas(df):
     st.markdown(html_table(table, wide=False), unsafe_allow_html=True)
 
 
+
+
+def product_sort_key(produto: str) -> int:
+    p = normalize_text(produto)
+    if "compromiss" in p:
+        return 0
+    if "renda fixa" in p:
+        return 1
+    if "fundo" in p and "imobili" not in p:
+        return 2
+    if "fundo" in p and "imobili" in p:
+        return 3
+    if "renda variavel" in p or "etf" in p or "bdr" in p:
+        return 4
+    if "saldo" in p or "caixa" in p:
+        return 5
+    return 9
+
+
+def sort_positions_for_cashflow(df: pd.DataFrame) -> pd.DataFrame:
+    work = df.copy()
+    work["_produto_ordem"] = work["produto"].apply(product_sort_key)
+    work["_liquidez_ordem"] = work["liquidez"].apply(liquidity_to_days)
+
+    # Para renda fixa e compromissadas, a cascata correta é pelo vencimento
+    # mais próximo em relação à data de atualização da posição.
+    work["_vencimento_ordem"] = pd.to_datetime(work["vencimento"], errors="coerce")
+    work["_vencimento_ordem"] = work["_vencimento_ordem"].fillna(pd.Timestamp("2262-04-11"))
+
+    # Fundos não têm vencimento no relatório. Para eles, a organização fica pela
+    # liquidez mapeada, do D+0 para o prazo mais longo.
+    is_fundo = work["produto"].astype(str).str.contains("Fundos", case=False, na=False) & ~work["produto"].astype(str).str.contains("Imobili", case=False, na=False)
+    work["_ordem_fluxo"] = np.where(is_fundo, 1, 0)
+
+    return work.sort_values(
+        ["titular", "conta", "_ordem_fluxo", "_vencimento_ordem", "_liquidez_ordem", "ativo"],
+        ascending=[True, True, True, True, True, True],
+    ).drop(columns=["_produto_ordem", "_liquidez_ordem", "_vencimento_ordem", "_ordem_fluxo"], errors="ignore")
+
+
 def render_detalhamento(positions, summary, reference_date: date):
     section("Detalhamento das contas")
 
@@ -1966,7 +2371,7 @@ def render_detalhamento(positions, summary, reference_date: date):
     ir_total = float(df["ir"].sum())
     contas = int(df["conta"].nunique())
     posicoes = int(len(df))
-    titulo = selected if selected != "Todos" else "Grupo Botuverá"
+    titulo = selected if selected != "Todos" else PARTNER
 
     st.markdown(
         f"""
@@ -1992,7 +2397,7 @@ def render_detalhamento(positions, summary, reference_date: date):
     export = df.copy()
     export["Aplicação"] = export["aplicacao"].apply(fmt_date_br)
     export["Vencimento"] = export["vencimento"].apply(fmt_date_br)
-    export["Dias desde aplicação"] = export["dias_desde_aplicacao"].apply(
+    export["Dias até vencimento"] = export["dias_ate_vencimento"].apply(
         lambda x: "" if x is None or pd.isna(x) else int(x)
     )
 
@@ -2005,7 +2410,7 @@ def render_detalhamento(positions, summary, reference_date: date):
             "liquidez",
             "Aplicação",
             "Vencimento",
-            "Dias desde aplicação",
+            "Dias até vencimento",
             "valor_bruto",
             "ir",
             "valor_liquido",
@@ -2020,27 +2425,31 @@ def render_detalhamento(positions, summary, reference_date: date):
         "Liquidez",
         "Aplicação",
         "Vencimento",
-        "Dias desde aplicação",
+        "Dias até vencimento",
         "Valor bruto",
         "IR",
         "Valor líquido",
     ]
 
+    section("Posição detalhada")
+
     st.download_button(
         label="baixar arquivo",
         data=to_excel_bytes(export),
-        file_name=f"tesouraria_botuvera_{str(titulo).lower().replace(' ', '_')}.xlsx",
+        file_name=f"tesouraria_{slugify(str(titulo))}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         help="Baixa a visão filtrada em Excel.",
     )
 
-    view = df.sort_values(
-        ["titular", "conta", "produto", "valor"],
-        ascending=[True, True, True, False],
-    ).copy()
+    view = sort_positions_for_cashflow(df).copy()
 
-    view["Liq."] = view["liquidez"].apply(lambda x: f'<span class="liquidity-pill">{html.escape(str(x))}</span>')
-    view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: "—" if x is None or pd.isna(x) else f"{int(x)}d")
+    view["Liq."] = view.apply(
+        lambda r: f'<span class="liquidity-pill">{html.escape("Venc." if str(r.get("liquidez", "")) == "Vencimento" else str(r.get("liquidez", "")))}</span>',
+        axis=1,
+    )
+    view["Vence em"] = view["dias_ate_vencimento"].apply(
+        lambda x: "—" if x is None or pd.isna(x) else (f"{int(x)}d" if int(x) >= 0 else "vencido")
+    )
     view["Part."] = view["participacao_conta"].apply(pct)
     view["Bruto"] = view["valor_bruto"].apply(brl)
     view["IR"] = view["ir"].apply(lambda x: f'<span class="tax-pill">{brl(x)}</span>' if float(x or 0) > 0 else brl(0))
@@ -2060,7 +2469,7 @@ def render_detalhamento(positions, summary, reference_date: date):
             "Liq.",
             "aplicacao_fmt",
             "vencimento_fmt",
-            "Dias",
+            "Vence em",
             "IOF",
             "Part.",
             "Bruto",
@@ -2077,7 +2486,7 @@ def render_detalhamento(positions, summary, reference_date: date):
         "Liq.",
         "Aplic.",
         "Venc.",
-        "Dias",
+        "Vence em",
         "IOF",
         "Part.",
         "Bruto",
@@ -2086,7 +2495,7 @@ def render_detalhamento(positions, summary, reference_date: date):
     ]
 
     st.markdown(
-        html_table(table_view, allow_html_cols=["Liq.", "IR"], wide=False),
+        html_table(table_view, allow_html_cols=["Liq.", "IR"], wide=True),
         unsafe_allow_html=True,
     )
 
@@ -2108,109 +2517,144 @@ def infer_emissor(row):
     if "COMPROMISS" in produto.upper() or "COMPROMISS" in asset:
         return "XP / Compromissadas"
 
+    if "FUNDO" in produto.upper() and "IMOBILI" in produto.upper():
+        return "Fundos Imobiliários"
+
+    if "RENDA VARI" in produto.upper() or "ETF" in produto.upper() or "BDR" in produto.upper():
+        return produto
+
     if "SALDO" in asset:
         return "Caixa"
 
     return produto or "Não identificado"
 
 
-def render_politica(positions, kpis):
-    section("Política de investimentos")
 
-    pos_fixado = positions[positions["fator"].isin(["pos_fixado", "caixa", "isento"])]["valor"].sum()
-    pos_fixado_pct = safe_div(pos_fixado, kpis["total"])
 
-    non_comp_cfo = positions[
-        (positions["produto"] != "Op. Compromissadas")
-        & (positions["valor"] >= VALIDACAO_CFO_VALOR)
-    ].copy()
+def load_policy_tables():
+    if not POLICY_FILE.exists():
+        return {}
+    try:
+        xl = pd.ExcelFile(POLICY_FILE)
+    except Exception:
+        return {}
+    tables = {}
+    for sheet_name in xl.sheet_names:
+        try:
+            df = pd.read_excel(POLICY_FILE, sheet_name=sheet_name, dtype=str)
+            df = df.dropna(how="all")
+            if not df.empty:
+                tables[sheet_name] = df.fillna("—")
+        except Exception:
+            pass
+    return tables
 
-    checks = pd.DataFrame(
-        [
-            [
-                "Risco de mercado",
-                "Mínimo de 80% em caixa/pós-fixado/isentos",
-                status_badge(pos_fixado_pct >= MIN_POS_FIXADO),
-                pct(pos_fixado_pct),
-            ],
-            [
-                "Liquidez operacional",
-                "Disponibilidade em D+0 ou D+1",
-                status_badge(kpis["liquidez_d0_pct"] >= 0.80),
-                pct(kpis["liquidez_d0_pct"]),
-            ],
-            [
-                "Validação CFO",
-                "Aplicações acima de R$ 5 mi, exceto compromissadas",
-                status_badge(non_comp_cfo.empty),
-                f"{len(non_comp_cfo)} alerta(s)",
-            ],
-            [
-                "IR consolidado",
-                "Diferença entre posição bruta e valor líquido",
-                status_badge(True),
-                brl(kpis["ir_total"]),
-            ],
-        ],
-        columns=["Controle", "Regra", "Status", "Leitura"],
-    )
 
-    st.markdown(
-        html_table(checks, allow_html_cols=["Status"], wide=False),
-        unsafe_allow_html=True,
-    )
+def parse_pct_cell(value, default=None):
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    text = str(value).strip().replace("%", "").replace(",", ".")
+    try:
+        num = float(text)
+    except Exception:
+        return default
+    return num / 100 if num > 1 else num
 
-    section("Limite por produto / emissor")
 
-    limite_emissor = min(kpis["total"] * LIMITE_EMISSOR_PCT, LIMITE_EMISSOR_VALOR)
+def policy_sheet(tables: dict, name: str) -> pd.DataFrame:
+    wanted = normalize_text(name)
+    for sheet_name, df in tables.items():
+        if normalize_text(sheet_name) == wanted:
+            return df.copy()
+    return pd.DataFrame()
 
-    emissor_df = positions.copy()
-    emissor_df["emissor"] = emissor_df.apply(infer_emissor, axis=1)
 
-    emissores = emissor_df.groupby("emissor", as_index=False).agg(
-        valor=("valor", "sum"),
-        valor_liquido=("valor_liquido", "sum"),
-        ir=("ir", "sum"),
-    ).sort_values("valor", ascending=False)
+def get_liquidity_policy_targets(tables: dict):
+    """Lê metas mínimas da aba Liquidez, quando existir.
 
-    emissores["% carteira"] = emissores["valor"] / kpis["total"]
-    emissores["limite"] = limite_emissor
-    emissores["status"] = emissores["valor"].apply(lambda v: status_badge(v <= limite_emissor))
+    Retorna mínimos para D+0/D+1 e até D+5. Se a planilha não existir,
+    usa fallback conservador compatível com o modelo anterior.
+    """
+    liq = policy_sheet(tables, "Liquidez")
+    targets = {
+        "d1_min": 0.80,
+        "d5_min": None,
+    }
+    if liq.empty:
+        return targets
 
-    emissores["% carteira"] = emissores["% carteira"].apply(pct)
-    emissores["limite"] = emissores["limite"].apply(brl)
-    emissores["valor bruto"] = emissores["valor"].apply(brl)
-    emissores["IR"] = emissores["ir"].apply(brl)
-    emissores["valor líquido"] = emissores["valor_liquido"].apply(brl)
+    cols = {normalize_text(c): c for c in liq.columns}
+    faixa_col = cols.get("faixa de liquidez") or cols.get("faixa") or cols.get("liquidez")
+    min_col = cols.get("alocacao minima") or cols.get("alocacao mínima") or cols.get("minimo") or cols.get("mínimo")
+    prazo_col = cols.get("prazo de resgate") or cols.get("prazo")
+    if not min_col:
+        return targets
 
-    emissores = emissores[
-        [
-            "emissor",
-            "valor bruto",
-            "% carteira",
-            "limite",
-            "IR",
-            "valor líquido",
-            "status",
-        ]
-    ]
+    for _, row in liq.iterrows():
+        faixa = normalize_text(row.get(faixa_col, "")) if faixa_col else ""
+        prazo = normalize_text(row.get(prazo_col, "")) if prazo_col else ""
+        minimum = parse_pct_cell(row.get(min_col), None)
+        if minimum is None:
+            continue
+        if "imediata" in faixa or "d+1" in prazo:
+            targets["d1_min"] = minimum
+        if "curta" in faixa or "d+5" in prazo or "ate d+5" in prazo:
+            targets["d5_min"] = minimum
+    return targets
 
-    emissores.columns = [
-        "Produto / Emissor",
-        "Bruto",
-        "% cart.",
-        "Limite",
-        "IR",
-        "Líquido",
-        "Status",
-    ]
 
-    st.markdown(
-        html_table(emissores, allow_html_cols=["Status"], wide=False),
-        unsafe_allow_html=True,
-    )
+def render_policy_config_tables():
+    tables = load_policy_tables()
+    if not tables:
+        return False
+
+    allowed = ["Liquidez", "Produtos", "Concentracao", "Concentração"]
+    rendered = False
+    section("Política configurada")
+    for sheet_name, df in tables.items():
+        sheet_norm = normalize_text(sheet_name)
+        if sheet_norm not in [normalize_text(x) for x in allowed]:
+            continue
+        if df.empty:
+            continue
+        rendered = True
+        st.markdown(
+            f'<div class="section-title" style="margin-top:10px;">{html.escape(str(sheet_name))}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(html_table(df, wide=False), unsafe_allow_html=True)
+    return rendered
+
+
+def render_horarios_operacionais():
+    tables = load_policy_tables()
+    horarios = policy_sheet(tables, "Horarios")
 
     section("Horários operacionais")
+
+    if not horarios.empty:
+        cols = {normalize_text(c): c for c in horarios.columns}
+        inst_col = cols.get("instituicao") or cols.get("instituição")
+        if inst_col:
+            inst_values = [x for x in horarios[inst_col].dropna().unique().tolist() if str(x).strip()]
+            if len(inst_values) >= 2:
+                columns = st.columns(min(len(inst_values), 3))
+                for idx, inst in enumerate(inst_values[:3]):
+                    with columns[idx]:
+                        df_inst = horarios[horarios[inst_col].astype(str) == str(inst)].drop(columns=[inst_col], errors="ignore")
+                        st.markdown(
+                            f'<div class="section-title" style="margin-top:0;">{html.escape(str(inst))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(html_table(df_inst, wide=False), unsafe_allow_html=True)
+                return
+        st.markdown(html_table(horarios, wide=False), unsafe_allow_html=True)
+        return
 
     xp = pd.DataFrame(
         [
@@ -2245,12 +2689,134 @@ def render_politica(positions, kpis):
     )
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown(html_table(xp, wide=False), unsafe_allow_html=True)
-
     with col2:
         st.markdown(html_table(btg, wide=False), unsafe_allow_html=True)
+
+
+def get_concentration_policy_limit_pct(tables: dict, default_pct=LIMITE_EMISSOR_PCT):
+    """Busca um limite percentual na aba Concentração/Concentracao.
+
+    Prioridade: linha 'Por ativo'; depois linhas com 'nível 1' ou limite numérico.
+    Retorna percentual decimal, ex.: 25% -> 0.25.
+    """
+    conc = policy_sheet(tables, "Concentracao")
+    if conc.empty:
+        conc = policy_sheet(tables, "Concentração")
+    if conc.empty:
+        return default_pct
+
+    cols = {normalize_text(c): c for c in conc.columns}
+    limite_col = cols.get("limite") or cols.get("limites maximo de concentracao") or cols.get("limites máximo de concentração")
+    max_col = cols.get("maximo") or cols.get("máximo") or cols.get("alocacao maxima") or cols.get("alocação máxima")
+    if not max_col:
+        return default_pct
+
+    candidates = []
+    for _, row in conc.iterrows():
+        label = normalize_text(row.get(limite_col, "")) if limite_col else ""
+        val = parse_pct_cell(row.get(max_col), None)
+        if val is None:
+            continue
+        if "por ativo" in label:
+            return val
+        if "nivel 1" in label or "nível 1" in label:
+            candidates.append((0, val))
+        else:
+            candidates.append((1, val))
+    if candidates:
+        candidates = sorted(candidates, key=lambda x: x[0])
+        return candidates[0][1]
+    return default_pct
+
+
+def render_politica(positions, kpis):
+    section("Política de investimentos")
+
+    tables = load_policy_tables()
+    targets = get_liquidity_policy_targets(tables)
+
+    d1_value = float(positions[positions["liquidez"].apply(liquidity_to_days) <= 1]["valor"].sum())
+    d5_value = float(positions[positions["liquidez"].apply(liquidity_to_days) <= 5]["valor"].sum())
+    d1_pct = safe_div(d1_value, kpis["total"])
+    d5_pct = safe_div(d5_value, kpis["total"])
+
+    concentration_limit_pct = get_concentration_policy_limit_pct(tables)
+    concentration_limit_value = kpis["total"] * concentration_limit_pct
+
+    emissor_check = positions.copy()
+    emissor_check["emissor"] = emissor_check.apply(infer_emissor, axis=1)
+    top_concentration_value = float(emissor_check.groupby("emissor")["valor"].sum().max()) if not emissor_check.empty else 0.0
+    top_concentration_pct = safe_div(top_concentration_value, kpis["total"])
+
+    checks_rows = [
+        [
+            "Liquidez imediata",
+            f"D+0/D+1 mínimo {pct(targets['d1_min'])}",
+            status_badge(d1_pct >= targets["d1_min"]),
+            pct(d1_pct),
+        ],
+    ]
+    if targets.get("d5_min") is not None:
+        checks_rows.append(
+            [
+                "Liquidez curta acumulada",
+                f"Até D+5 mínimo {pct(targets['d5_min'])}",
+                status_badge(d5_pct >= targets["d5_min"]),
+                pct(d5_pct),
+            ]
+        )
+    checks_rows.extend(
+        [
+            [
+                "Concentração máxima",
+                f"Limite configurado {pct(concentration_limit_pct)} do PL",
+                status_badge(top_concentration_pct <= concentration_limit_pct),
+                pct(top_concentration_pct),
+            ],
+            [
+                "IR consolidado",
+                "Diferença entre posição bruta e valor líquido",
+                status_badge(True),
+                brl(kpis["ir_total"]),
+            ],
+        ]
+    )
+
+    checks = pd.DataFrame(checks_rows, columns=["Controle", "Regra", "Status", "Leitura"])
+    st.markdown(html_table(checks, allow_html_cols=["Status"], wide=False), unsafe_allow_html=True)
+
+    render_policy_config_tables()
+
+    section("Limite por produto / emissor")
+
+    limite_emissor = concentration_limit_value
+
+    emissor_df = positions.copy()
+    emissor_df["emissor"] = emissor_df.apply(infer_emissor, axis=1)
+
+    emissores = emissor_df.groupby("emissor", as_index=False).agg(
+        valor=("valor", "sum"),
+        valor_liquido=("valor_liquido", "sum"),
+        ir=("ir", "sum"),
+    ).sort_values("valor", ascending=False)
+
+    emissores["% carteira"] = emissores["valor"] / kpis["total"]
+    emissores["limite"] = limite_emissor
+    emissores["status"] = emissores["valor"].apply(lambda v: status_badge(v <= limite_emissor))
+
+    emissores["% carteira"] = emissores["% carteira"].apply(pct)
+    emissores["limite"] = emissores["limite"].apply(brl)
+    emissores["valor bruto"] = emissores["valor"].apply(brl)
+    emissores["IR"] = emissores["ir"].apply(brl)
+    emissores["valor líquido"] = emissores["valor_liquido"].apply(brl)
+
+    emissores = emissores[["emissor", "valor bruto", "% carteira", "limite", "IR", "valor líquido", "status"]]
+    emissores.columns = ["Produto / Emissor", "Bruto", "% cart.", "Limite", "IR", "Líquido", "Status"]
+    st.markdown(html_table(emissores, allow_html_cols=["Status"], wide=False), unsafe_allow_html=True)
+
+    render_horarios_operacionais()
 
     st.markdown(
         '<div class="muted" style="margin-top:12px;">Aplicações feitas fora da janela de funcionamento ficam agendadas para o dia útil seguinte, sujeitas à disponibilidade do ativo nas mesmas condições. Horários de Brasília.</div>',
@@ -2259,7 +2825,7 @@ def render_politica(positions, kpis):
 
 
 def main():
-    page_icon = Image.open(BOTUVERA_LOGO) if BOTUVERA_LOGO.exists() else "📊"
+    page_icon = get_page_icon()
 
     st.set_page_config(
         page_title=APP_TITLE,
@@ -2270,20 +2836,11 @@ def main():
 
     inject_css()
 
-    with st.sidebar:
-        st.markdown("### Atualização de dados")
-        st.caption("Use os arquivos em `data/positions/` ou faça upload manual para conferência.")
-        uploaded = st.file_uploader(
-            "Upload manual de posições XP",
-            type=["xlsx"],
-            accept_multiple_files=True,
-        )
-
-        st.divider()
-        st.markdown("### Regras atuais")
-        st.write(f"• Mínimo pós-fixado: **{pct(MIN_POS_FIXADO)}**")
-        st.write(f"• Validação CFO acima de: **{brl(VALIDACAO_CFO_VALOR)}**")
-        st.write("• IOF de fundos: 96% no 1º dia e zeragem no 30º dia corrido")
+    # App em modo operacional: dados vêm dos arquivos do repositório.
+    # A barra lateral foi removida para não poluir a apresentação.
+    # Para atualizar: use o menu do Streamlit no canto superior direito
+    # ou faça novo commit nos arquivos de data/positions/.
+    uploaded = None
 
     if uploaded:
         positions, summary = load_data_from_uploads(uploaded)
@@ -2323,7 +2880,7 @@ def main():
         render_politica(positions, kpis)
 
     st.markdown(
-        f'<div class="footer">{GESTOR} • Tesouraria Grupo Botuverá • Informações confidenciais</div>',
+        f'<div class="footer">{GESTOR} • Tesouraria {PARTNER} • Informações confidenciais</div>',
         unsafe_allow_html=True,
     )
 
