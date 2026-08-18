@@ -141,7 +141,21 @@ def parse_money(x) -> float:
         return 0.0
 
     s = s.replace("R$", "").replace("%", "").strip()
-    s = s.replace(".", "").replace(",", ".")
+    s = s.replace(" ", "")
+
+    # Formato brasileiro: 1.234.567,89
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Formato internacional vindo do Excel como texto: 506266.45
+    elif s.count(".") == 1:
+        left, right = s.split(".", 1)
+        if len(right) in (1, 2):
+            s = s
+        else:
+            s = s.replace(".", "")
+    # Formato com separador de milhar: 1.234.567
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
 
     try:
         return float(s)
@@ -1050,13 +1064,18 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
     if "fundo" in group_text:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
 
-        # Posição normal dos fundos costuma vir nas colunas 5 e 6.
-        valor_bruto = parse_money(row.iloc[5]) if len(row) > 5 else 0.0
-        valor_liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0
+        # Layout XP para fundos:
+        # col 4 = Em cotização
+        # col 5 = Posição
+        # col 6 = Valor líquido
+        em_cotizacao = parse_money(row.iloc[4]) if len(row) > 4 else 0.0
+        posicao = parse_money(row.iloc[5]) if len(row) > 5 else 0.0
+        liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0
 
-        # Algumas linhas de cotização/resgate em trânsito vêm em outro desenho de colunas.
-        # Quando as colunas padrão não trazem valor, procura os valores monetários da linha
-        # para não deixar "em cotização" fora do PL do produto.
+        # Posição total de tesouraria = posição atual + valores em cotização.
+        valor_bruto = posicao + em_cotizacao
+        valor_liquido = (liquido if liquido > 0 else posicao) + em_cotizacao
+
         if valor_bruto <= 0 and valor_liquido <= 0:
             vals = []
             for item in list(row.iloc[1:]):
@@ -1064,7 +1083,6 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
                 if v > 0:
                     vals.append(v)
 
-            # Evita capturar quantidade/cota muito pequena quando houver valor financeiro.
             vals_financeiros = [v for v in vals if v >= 100]
             if vals_financeiros:
                 valor_bruto = max(vals_financeiros)
@@ -1095,7 +1113,6 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
 
     produto, liquidez, fator = classify_product(group_name, subgroup_name, asset)
 
-    # Se vier algum bloco de cotização em fundos, continua classificado como fundo.
     if "fundo" in group_text or "cotiza" in group_text or "cotiz" in group_text:
         if "d+31" in group_text or "d31" in group_text:
             produto, liquidez, fator = "Fundos D+31", "D+31", "pos_fixado"
@@ -1380,84 +1397,144 @@ def match_current_fund_position(funds: pd.DataFrame, conta: str, fundo_norm: str
     return scored.iloc[0]
 
 
-def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
-    funds = prepare_fund_positions_for_matching(positions)
-
+def assign_fund_movements_to_positions(apps: pd.DataFrame, funds: pd.DataFrame) -> pd.DataFrame:
     if apps.empty or funds.empty:
         return pd.DataFrame()
 
-    lots = []
+    assigned = []
 
-    group_cols = ["conta", "fundo_norm"]
-    for (conta, fundo_norm), movs in apps.sort_values("data_movimento").groupby(group_cols):
-        movs = movs.sort_values("data_movimento")
-
-        current = match_current_fund_position(funds, conta, fundo_norm)
-        if current.empty:
+    for _, mov in apps.iterrows():
+        same_account = funds[funds["conta"].astype(str) == str(mov["conta"])]
+        if same_account.empty:
             continue
 
-        fundo_nome = str(movs.iloc[0]["fundo"])
-        lotes = []
+        scored = same_account.copy()
+        scored["score_match"] = scored["fundo_norm"].apply(lambda x: fund_match_score(mov["fundo_norm"], x))
+        scored = scored.sort_values("score_match", ascending=False)
 
-        for _, mov in movs.iterrows():
-            valor = float(mov["valor_movimento"] or 0)
-            if valor <= 0:
-                continue
+        if scored.empty or float(scored.iloc[0]["score_match"]) < 0.48:
+            continue
 
-            if mov["tipo_norm"] == "resgate":
-                restante_resgate = valor
+        best = scored.iloc[0]
+        item = mov.to_dict()
+        item["current_fundo_norm"] = best["fundo_norm"]
+        item["current_ativo"] = best["ativo"]
+        item["score_match"] = float(best["score_match"])
+        assigned.append(item)
 
-                while restante_resgate > 0 and lotes:
-                    abatimento = min(lotes[0]["saldo_lote"], restante_resgate)
-                    lotes[0]["saldo_lote"] -= abatimento
-                    restante_resgate -= abatimento
+    return pd.DataFrame(assigned)
 
-                    if lotes[0]["saldo_lote"] <= 0.01:
-                        lotes.pop(0)
 
-            else:
-                lotes.append(
-                    {
-                        "conta": str(conta),
-                        "fundo": fundo_nome,
-                        "fundo_norm": fundo_norm,
-                        "data_aplicacao": mov["data_movimento"],
-                        "valor_aplicado_original": valor,
-                        "saldo_lote": valor,
-                    }
-                )
+def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
+    # A posição XP é a fonte oficial de valores financeiros.
+    # A planilha de aplicações/resgates serve apenas para montar os lotes de datas,
+    # calcular IOF e dividir a posição atual por lote quando houver mais de uma data.
+    funds = prepare_fund_positions_for_matching(positions)
+
+    if funds.empty:
+        return pd.DataFrame()
+
+    assigned = assign_fund_movements_to_positions(apps, funds) if not apps.empty else pd.DataFrame()
+    lots = []
+
+    for _, current in funds.iterrows():
+        conta = str(current.get("conta", ""))
+        current_norm = str(current.get("fundo_norm", ""))
+        current_name = str(current.get("ativo", ""))
 
         valor_bruto_atual = float(current.get("valor_bruto", 0) or 0)
         valor_liquido_atual = float(current.get("valor_liquido", 0) or 0)
         ir_atual = float(current.get("ir", 0) or 0)
 
-        saldo_total_lotes = sum(l["saldo_lote"] for l in lotes)
+        if valor_bruto_atual <= 0:
+            continue
 
-        # Reconciliação prática: se a posição atual for menor que a soma dos lotes,
-        # o app presume que a diferença saiu dos lotes mais antigos.
-        if valor_bruto_atual > 0 and saldo_total_lotes > valor_bruto_atual:
-            diferenca = saldo_total_lotes - valor_bruto_atual
+        if assigned.empty:
+            movs = pd.DataFrame()
+        else:
+            movs = assigned[
+                (assigned["conta"].astype(str) == conta)
+                & (assigned["current_fundo_norm"].astype(str) == current_norm)
+            ].sort_values("data_movimento")
 
-            while diferenca > 0 and lotes:
-                abatimento = min(lotes[0]["saldo_lote"], diferenca)
-                lotes[0]["saldo_lote"] -= abatimento
-                diferenca -= abatimento
+        lotes = []
 
-                if lotes[0]["saldo_lote"] <= 0.01:
-                    lotes.pop(0)
+        if not movs.empty:
+            for _, mov in movs.iterrows():
+                valor = float(mov["valor_movimento"] or 0)
+                if valor <= 0:
+                    continue
 
-        saldo_total_lotes = sum(l["saldo_lote"] for l in lotes)
+                if mov["tipo_norm"] == "resgate":
+                    # O valor do resgate pode vir com rendimento embutido.
+                    # Ainda assim, usamos apenas para estimar quais lotes antigos foram consumidos.
+                    restante_resgate = valor
+
+                    while restante_resgate > 0 and lotes:
+                        abatimento = min(lotes[0]["saldo_lote"], restante_resgate)
+                        lotes[0]["saldo_lote"] -= abatimento
+                        restante_resgate -= abatimento
+
+                        if lotes[0]["saldo_lote"] <= 0.01:
+                            lotes.pop(0)
+                else:
+                    lotes.append(
+                        {
+                            "conta": conta,
+                            "fundo": current_name,
+                            "fundo_norm": current_norm,
+                            "data_aplicacao": mov["data_movimento"],
+                            "valor_aplicado_original": valor,
+                            "saldo_lote": valor,
+                            "fonte_lote": "movimentacao",
+                        }
+                    )
+
+            # Se os resgates zeraram os lotes pelo valor nominal, mas a XP ainda mostra posição,
+            # preserva uma data de referência da própria planilha em vez de esconder o fundo.
+            if not lotes and valor_bruto_atual > 0:
+                datas_aplicacao = movs.loc[movs["tipo_norm"].eq("aplicacao"), "data_movimento"].dropna()
+                data_base = datas_aplicacao.min() if not datas_aplicacao.empty else pd.NaT
+                lotes.append(
+                    {
+                        "conta": conta,
+                        "fundo": current_name,
+                        "fundo_norm": current_norm,
+                        "data_aplicacao": data_base,
+                        "valor_aplicado_original": 0.0,
+                        "saldo_lote": valor_bruto_atual,
+                        "fonte_lote": "residual_posicao_xp",
+                    }
+                )
+        else:
+            # Fundo existe na XP, mas não existe movimento compatível na planilha.
+            lotes.append(
+                {
+                    "conta": conta,
+                    "fundo": current_name,
+                    "fundo_norm": current_norm,
+                    "data_aplicacao": pd.NaT,
+                    "valor_aplicado_original": 0.0,
+                    "saldo_lote": valor_bruto_atual,
+                    "fonte_lote": "sem_movimentacao",
+                }
+            )
+
+        saldo_total_lotes = sum(float(l.get("saldo_lote", 0) or 0) for l in lotes)
+        if saldo_total_lotes <= 0:
+            saldo_total_lotes = valor_bruto_atual
 
         for lote in lotes:
-            if lote["saldo_lote"] <= 0.01:
+            saldo_lote = float(lote.get("saldo_lote", 0) or 0)
+            if saldo_lote <= 0.01:
                 continue
 
-            peso_lote = safe_div(lote["saldo_lote"], saldo_total_lotes)
+            peso_lote = safe_div(saldo_lote, saldo_total_lotes)
 
             lote["valor_bruto_atual"] = valor_bruto_atual * peso_lote
             lote["valor_liquido_atual"] = valor_liquido_atual * peso_lote
             lote["ir_atual"] = ir_atual * peso_lote
-
+            lote["saldo_lote"] = valor_bruto_atual * peso_lote
             lots.append(lote)
 
     return pd.DataFrame(lots)
@@ -1466,7 +1543,7 @@ def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
 def enrich_fund_efficiency(positions: pd.DataFrame, reference_date: date) -> pd.DataFrame:
     apps = load_fund_applications()
 
-    if apps.empty or positions.empty:
+    if positions.empty:
         return pd.DataFrame()
 
     lots = build_fund_lots(apps, positions)
@@ -1478,10 +1555,19 @@ def enrich_fund_efficiency(positions: pd.DataFrame, reference_date: date) -> pd.
 
     for _, lote in lots.iterrows():
         data_aplicacao = lote["data_aplicacao"]
-        dias = max((reference_date - data_aplicacao).days, 0) if isinstance(data_aplicacao, date) else 0
-        iof_rate = iof_rate_by_days(dias)
-        data_zeragem = data_aplicacao + timedelta(days=30) if isinstance(data_aplicacao, date) else pd.NaT
-        dias_zerar = max((data_zeragem - reference_date).days, 0) if isinstance(data_zeragem, date) else 0
+
+        if isinstance(data_aplicacao, date) and not pd.isna(data_aplicacao):
+            dias = max((reference_date - data_aplicacao).days, 0)
+            iof_rate = iof_rate_by_days(dias)
+            data_zeragem = data_aplicacao + timedelta(days=30)
+            dias_zerar = max((data_zeragem - reference_date).days, 0)
+            status = "IOF zerado" if iof_rate == 0 else "Aguardando zeragem"
+        else:
+            dias = np.nan
+            iof_rate = np.nan
+            data_zeragem = pd.NaT
+            dias_zerar = np.nan
+            status = "Sem data de aplicação"
 
         rows.append(
             {
@@ -1497,11 +1583,13 @@ def enrich_fund_efficiency(positions: pd.DataFrame, reference_date: date) -> pd.
                 "valor_bruto_atual": float(lote["valor_bruto_atual"] or 0),
                 "valor_liquido_atual": float(lote["valor_liquido_atual"] or 0),
                 "ir_atual": float(lote["ir_atual"] or 0),
-                "status": "IOF zerado" if iof_rate == 0 else "Aguardando zeragem",
+                "status": status,
+                "fonte_lote": lote.get("fonte_lote", ""),
             }
         )
 
     return pd.DataFrame(rows)
+
 
 def enrich(positions: pd.DataFrame, summary: pd.DataFrame, reference_date: date):
     if positions.empty:
@@ -1773,36 +1861,34 @@ def render_eficiencia_fundos(positions, reference_date: date):
 
     if eff.empty:
         st.markdown(
-            '<div class="panel"><div class="muted">Sem planilha de aplicações de fundos encontrada. Use <b>data/config/aplicacoes_fundos.xlsx</b> com as colunas Conta, Fundo, Data de Aplicação e Valor Aplicação.</div></div>',
+            '<div class="panel"><div class="muted">Sem planilha de movimentações de fundos encontrada. Use <b>data/config/aplicacoes_fundos.xlsx</b> com as colunas Conta, Fundo, Data, Tipo e Valor.</div></div>',
             unsafe_allow_html=True,
         )
         return
 
     view = eff.copy().sort_values(["conta", "fundo", "data_aplicacao"])
     view["Aplicação"] = view["data_aplicacao"].apply(fmt_date_br)
-    view["Aplicado"] = view["valor_aplicado"].apply(brl)
-    view["Saldo lote"] = view["saldo_lote"].apply(brl) if "saldo_lote" in view.columns else view["valor_aplicado"].apply(brl)
-    view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: f"{int(x)}d")
-    view["IOF"] = view["aliquota_iof"].apply(lambda x: iof_badge(int(x)))
-    view["Zera em"] = view["dias_ate_zerar"].apply(lambda x: "zerado" if int(x) == 0 else f"{int(x)}d")
+    view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: "—" if pd.isna(x) else f"{int(x)}d")
+    view["IOF"] = view["aliquota_iof"].apply(lambda x: "—" if pd.isna(x) else iof_badge(int(x)))
+    view["Zera em"] = view["dias_ate_zerar"].apply(lambda x: "—" if pd.isna(x) else ("zerado" if int(x) == 0 else f"{int(x)}d"))
     view["Data zero"] = view["data_zeragem"].apply(fmt_date_br)
-    view["Bruto atual"] = view["valor_bruto_atual"].apply(brl)
-    view["Líquido atual"] = view["valor_liquido_atual"].apply(brl)
-    view["Status"] = view["status"].apply(lambda s: status_badge(s == "IOF zerado", "Zerado", "Aguard."))
+    view["Bruto XP"] = view["valor_bruto_atual"].apply(brl)
+    view["Líquido XP"] = view["valor_liquido_atual"].apply(brl)
+    view["IR XP"] = view["ir_atual"].apply(brl)
+    view["Status"] = view["status"].apply(lambda s: status_badge(s == "IOF zerado", "Zerado", "Aguard." if s != "Sem data de aplicação" else "Sem data"))
 
     out = view[
         [
             "conta",
             "fundo",
             "Aplicação",
-            "Aplicado",
-            "Saldo lote",
             "Dias",
             "IOF",
             "Zera em",
             "Data zero",
-            "Bruto atual",
-            "Líquido atual",
+            "Bruto XP",
+            "Líquido XP",
+            "IR XP",
             "Status",
         ]
     ].copy()
@@ -1811,14 +1897,13 @@ def render_eficiencia_fundos(positions, reference_date: date):
         "Conta",
         "Fundo",
         "Aplicação",
-        "Aplicado",
-        "Saldo lote",
         "Dias",
         "IOF",
         "Zera em",
         "Data zero",
-        "Bruto atual",
-        "Líquido atual",
+        "Bruto XP",
+        "Líquido XP",
+        "IR XP",
         "Status",
     ]
 
