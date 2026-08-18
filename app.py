@@ -2,6 +2,7 @@ import base64
 import html
 import io
 import re
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -177,6 +178,71 @@ def parse_date_br(x):
 
     ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
     return pd.NaT if pd.isna(ts) else ts.date()
+
+
+def parse_fund_movement_date(x):
+    """Lê a data da planilha de movimentações dos fundos sem inverter ISO.
+    Corrige casos como 2026-05-12, que não pode virar 05/12/2026.
+    """
+    if x is None:
+        return pd.NaT
+
+    try:
+        if pd.isna(x):
+            return pd.NaT
+    except Exception:
+        pass
+
+    if isinstance(x, (datetime, pd.Timestamp)):
+        ts = pd.to_datetime(x, errors="coerce")
+        return pd.NaT if pd.isna(ts) else ts.date()
+
+    if isinstance(x, date):
+        return x
+
+    s = str(x).strip()
+    if s in ["", "-", "—", "nan", "NaT", "None"]:
+        return pd.NaT
+
+    # Excel/pandas pode entregar datas como 2026-05-12. Nesse caso é ano-mês-dia.
+    if re.match(r"^\d{4}-\d{1,2}-\d{1,2}", s):
+        ts = pd.to_datetime(s, errors="coerce", yearfirst=True)
+        return pd.NaT if pd.isna(ts) else ts.date()
+
+    # Formato brasileiro digitado manualmente.
+    for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+
+    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    return pd.NaT if pd.isna(ts) else ts.date()
+
+
+def fund_match_score(a: str, b: str) -> float:
+    """Score simples para casar nomes de fundos escritos de formas diferentes."""
+    a = normalize_text(a)
+    b = normalize_text(b)
+
+    if not a or not b:
+        return 0.0
+
+    if a == b:
+        return 1.0
+
+    if a in b or b in a:
+        return 0.92
+
+    tokens_a = {t for t in a.split() if len(t) > 2}
+    tokens_b = {t for t in b.split() if len(t) > 2}
+
+    common = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b) or 1
+    token_score = common / union
+    seq_score = SequenceMatcher(None, a, b).ratio()
+
+    return max(token_score, seq_score)
 
 
 def fmt_date_br(x) -> str:
@@ -983,8 +1049,26 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
 
     if "fundo" in group_text:
         asset = str(row.iloc[0]).strip() if not is_empty(row.iloc[0]) else str(group_name).strip().upper()
+
+        # Posição normal dos fundos costuma vir nas colunas 5 e 6.
         valor_bruto = parse_money(row.iloc[5]) if len(row) > 5 else 0.0
         valor_liquido = parse_money(row.iloc[6]) if len(row) > 6 else 0.0
+
+        # Algumas linhas de cotização/resgate em trânsito vêm em outro desenho de colunas.
+        # Quando as colunas padrão não trazem valor, procura os valores monetários da linha
+        # para não deixar "em cotização" fora do PL do produto.
+        if valor_bruto <= 0 and valor_liquido <= 0:
+            vals = []
+            for item in list(row.iloc[1:]):
+                v = parse_money(item)
+                if v > 0:
+                    vals.append(v)
+
+            # Evita capturar quantidade/cota muito pequena quando houver valor financeiro.
+            vals_financeiros = [v for v in vals if v >= 100]
+            if vals_financeiros:
+                valor_bruto = max(vals_financeiros)
+                valor_liquido = valor_bruto
 
     elif "compromiss" in group_text:
         asset = "OPERAÇÕES COMPROMISSADAS"
@@ -1010,6 +1094,13 @@ def build_position_from_row(row, group_name: str, subgroup_name: str, account: s
         valor_liquido = valor_bruto
 
     produto, liquidez, fator = classify_product(group_name, subgroup_name, asset)
+
+    # Se vier algum bloco de cotização em fundos, continua classificado como fundo.
+    if "fundo" in group_text or "cotiza" in group_text or "cotiz" in group_text:
+        if "d+31" in group_text or "d31" in group_text:
+            produto, liquidez, fator = "Fundos D+31", "D+31", "pos_fixado"
+        else:
+            produto, liquidez, fator = "Fundos D+0", "D+0", "pos_fixado"
 
     days = None
     if isinstance(appl, date) and not pd.isna(appl) and isinstance(ref_date, date):
@@ -1237,7 +1328,7 @@ def load_fund_applications():
     out["conta"] = out["conta"].astype(str).str.replace(r"\D", "", regex=True)
     out["fundo"] = out["fundo"].astype(str).str.strip()
     out["fundo_norm"] = out["fundo"].apply(normalize_text)
-    out["data_movimento"] = pd.to_datetime(out["data_movimento"], errors="coerce", dayfirst=True).dt.date
+    out["data_movimento"] = out["data_movimento"].apply(parse_fund_movement_date)
     out["valor_movimento"] = out["valor_movimento"].apply(parse_money)
     out["tipo_norm"] = out["tipo"].apply(normalize_text)
 
@@ -1250,30 +1341,50 @@ def load_fund_applications():
     return out
 
 
+def prepare_fund_positions_for_matching(positions: pd.DataFrame) -> pd.DataFrame:
+    funds = positions[positions["produto"].str.contains("Fundos", case=False, na=False)].copy()
+
+    if funds.empty:
+        return pd.DataFrame()
+
+    funds["fundo_norm"] = funds["ativo"].apply(normalize_text)
+
+    # Soma posição normal + eventuais valores em cotização/resgate em trânsito
+    # para chegar na posição total atual do fundo/produto.
+    grouped = funds.groupby(["conta", "fundo_norm"], as_index=False).agg(
+        ativo=("ativo", "first"),
+        titular=("titular", "first"),
+        produto=("produto", "first"),
+        liquidez=("liquidez", "first"),
+        valor_bruto=("valor_bruto", "sum"),
+        valor_liquido=("valor_liquido", "sum"),
+        ir=("ir", "sum"),
+    )
+
+    return grouped
+
+
 def match_current_fund_position(funds: pd.DataFrame, conta: str, fundo_norm: str):
     same_account = funds[funds["conta"].astype(str) == str(conta)]
 
     if same_account.empty:
         return pd.Series(dtype=object)
 
-    exact = same_account[same_account["fundo_norm"] == fundo_norm]
-    if not exact.empty:
-        return exact.iloc[0]
+    scored = same_account.copy()
+    scored["score_match"] = scored["fundo_norm"].apply(lambda x: fund_match_score(fundo_norm, x))
+    scored = scored.sort_values("score_match", ascending=False)
 
-    partial = same_account[
-        same_account["fundo_norm"].apply(lambda x: fundo_norm in x or x in fundo_norm)
-    ]
+    if scored.empty or float(scored.iloc[0]["score_match"]) < 0.48:
+        return pd.Series(dtype=object)
 
-    return partial.iloc[0] if not partial.empty else pd.Series(dtype=object)
+    return scored.iloc[0]
 
 
 def build_fund_lots(apps: pd.DataFrame, positions: pd.DataFrame):
-    funds = positions[positions["produto"].str.contains("Fundos", case=False, na=False)].copy()
+    funds = prepare_fund_positions_for_matching(positions)
 
     if apps.empty or funds.empty:
         return pd.DataFrame()
-
-    funds["fundo_norm"] = funds["ativo"].apply(normalize_text)
 
     lots = []
 
@@ -1646,14 +1757,7 @@ def render_visao_geral(positions, summary, kpis):
         disp = disp[["produto", "liquidez", "Part.", "Bruto", "IR", "Líquido"]]
         disp.columns = ["Produto", "Liq.", "Part.", "Bruto", "IR", "Líquido"]
 
-        st.markdown(
-            """
-            <div style="padding-top:0px;">
-            """,
-            unsafe_allow_html=True,
-        )
         st.markdown(html_table(disp, wide=False), unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     section("Posição por titular")
 
@@ -1674,15 +1778,16 @@ def render_eficiencia_fundos(positions, reference_date: date):
         )
         return
 
-    view = eff.copy()
+    view = eff.copy().sort_values(["conta", "fundo", "data_aplicacao"])
     view["Aplicação"] = view["data_aplicacao"].apply(fmt_date_br)
     view["Aplicado"] = view["valor_aplicado"].apply(brl)
+    view["Saldo lote"] = view["saldo_lote"].apply(brl) if "saldo_lote" in view.columns else view["valor_aplicado"].apply(brl)
     view["Dias"] = view["dias_desde_aplicacao"].apply(lambda x: f"{int(x)}d")
     view["IOF"] = view["aliquota_iof"].apply(lambda x: iof_badge(int(x)))
     view["Zera em"] = view["dias_ate_zerar"].apply(lambda x: "zerado" if int(x) == 0 else f"{int(x)}d")
     view["Data zero"] = view["data_zeragem"].apply(fmt_date_br)
-    view["Bruto"] = view["valor_bruto_atual"].apply(brl)
-    view["Líquido"] = view["valor_liquido_atual"].apply(brl)
+    view["Bruto atual"] = view["valor_bruto_atual"].apply(brl)
+    view["Líquido atual"] = view["valor_liquido_atual"].apply(brl)
     view["Status"] = view["status"].apply(lambda s: status_badge(s == "IOF zerado", "Zerado", "Aguard."))
 
     out = view[
@@ -1691,12 +1796,13 @@ def render_eficiencia_fundos(positions, reference_date: date):
             "fundo",
             "Aplicação",
             "Aplicado",
+            "Saldo lote",
             "Dias",
             "IOF",
             "Zera em",
             "Data zero",
-            "Bruto",
-            "Líquido",
+            "Bruto atual",
+            "Líquido atual",
             "Status",
         ]
     ].copy()
@@ -1706,12 +1812,13 @@ def render_eficiencia_fundos(positions, reference_date: date):
         "Fundo",
         "Aplicação",
         "Aplicado",
+        "Saldo lote",
         "Dias",
         "IOF",
         "Zera em",
         "Data zero",
-        "Bruto",
-        "Líquido",
+        "Bruto atual",
+        "Líquido atual",
         "Status",
     ]
 
